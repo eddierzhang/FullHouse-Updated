@@ -125,15 +125,15 @@
           <div class="panel action-panel" id="tasks">
             <div class="panel-heading"><div><h2>Action center</h2><p>Review recommendations from your agents.</p></div><div class="tabs"><button class="tab active" data-filter="all">All <span>3</span></button><button class="tab" data-filter="urgent">Urgent</button></div></div>
             <div class="task-list">
-              <article class="task-row" data-priority="urgent">
+              <article class="task-row" data-priority="urgent" data-recommendation-id="rec-salmon">
                 <div class="task-symbol coral-bg">!</div><div class="task-copy"><div><span class="tag urgent">Urgent</span><span class="task-agent">Inventory Agent</span></div><h4>Salmon stock will run out before dinner service</h4><p>Current stock covers ~42 orders. Forecast demand is 68–75.</p><div class="handoff">Inventory → Supply Chain → Profit</div></div>
                 <div class="task-actions"><button class="secondary-button details-button">View details</button><button class="approve-button">Approve order</button></div>
               </article>
-              <article class="task-row" data-priority="urgent">
+              <article class="task-row" data-priority="urgent" data-recommendation-id="rec-shift">
                 <div class="task-symbol blue-bg">♙</div><div class="task-copy"><div><span class="tag review">Review</span><span class="task-agent">Employee Agent</span></div><h4>Dinner shift coverage gap</h4><p>One server called out. Mia Chen is available and under weekly hours.</p></div>
                 <div class="task-actions"><button class="secondary-button details-button">View details</button><button class="approve-button">Offer shift</button></div>
               </article>
-              <article class="task-row" data-priority="normal">
+              <article class="task-row" data-priority="normal" data-recommendation-id="rec-cauliflower">
                 <div class="task-symbol green-bg">↗</div><div class="task-copy"><div><span class="tag opportunity">Opportunity</span><span class="task-agent">Profit Agent</span></div><h4>Feature the roasted cauliflower tonight</h4><p>High inventory, 71% margin, and trending in local menu searches.</p><div class="handoff">Market signal + Inventory → Menu</div></div>
                 <div class="task-actions"><button class="secondary-button details-button">View details</button><button class="approve-button">Add special</button></div>
               </article>
@@ -179,8 +179,8 @@
   <div class="modal-overlay" id="modalOverlay">
     <form class="modal" id="taskForm">
       <div class="modal-heading"><div><p class="kicker">DELEGATE WORK</p><h2>Create an agent task</h2></div><button type="button" id="modalClose">×</button></div>
-      <label>Task description<textarea required placeholder="e.g. Compare produce vendor pricing for next week"></textarea></label>
-      <label>Assign agent<select><option>Profit Agent</option><option>Employee Agent</option><option>Inventory Agent</option><option>Supply Chain Agent</option></select></label>
+      <label>Task description<textarea name="description" required placeholder="e.g. Compare produce vendor pricing for next week"></textarea></label>
+      <label>Assign agent<select name="agentId"><option value="profit">Profit Agent</option><option value="employee">Employee Agent</option><option value="inventory">Inventory Agent</option><option value="supply">Supply Chain Agent</option></select></label>
       <div class="modal-actions"><button type="button" class="secondary-button" id="cancelTask">Cancel</button><button type="submit" class="primary-button">Create task</button></div>
     </form>
   </div>
