@@ -2,7 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.agents import crud, schemas
+from app.agents.appliers import ApplyError, apply_action, is_appliable, missing_inputs
 from app.agents.runner import execute_run
+from app.audit.context import Actor, actor_context, get_actor
 from app.db.session import get_db
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
@@ -59,19 +61,67 @@ def get_run(run_id: str, db: Session = Depends(get_db)):
     )
 
 
+def _as_out(action) -> schemas.AgentActionOut:
+    out = schemas.AgentActionOut.model_validate(action)
+    out.appliable = is_appliable(action)
+    out.needs_input = missing_inputs(action)
+    return out
+
+
 @router.get("/actions", response_model=list[schemas.AgentActionOut])
 def list_actions(status: str | None = None, db: Session = Depends(get_db)):
-    return crud.list_actions(db, status=status)
+    return [_as_out(a) for a in crud.list_actions(db, status=status)]
 
 
 @router.post("/actions/{action_id}/approve", response_model=schemas.AgentActionOut)
-def approve_action(action_id: str, db: Session = Depends(get_db)):
+def approve_action(
+    action_id: str,
+    payload: schemas.ApproveRequest | None = None,
+    db: Session = Depends(get_db),
+):
+    """Approve a proposal and carry out its effect.
+
+    The applier, the status change and the audit rows commit together.
+    If the effect cannot be applied the whole thing rolls back and the
+    action stays pending, so it can be re-approved once the underlying
+    problem is fixed.
+    """
     action = crud.get_action(db, action_id)
     if action is None:
         raise HTTPException(404, "Action not found")
     if action.status != "pending":
         raise HTTPException(400, f"Action already {action.status}")
-    return crud.decide_action(db, action, "approved")
+
+    # Merge and persist the operator's values, so the record shows what was
+    # actually approved rather than the incomplete proposal.
+    overrides = (payload.overrides if payload else None) or {}
+    if overrides:
+        action.payload = {**(action.payload or {}), **overrides}
+
+    # The operator is the actor, but the change still traces back to the
+    # agent run that proposed it -- the change log records both.
+    approver = get_actor()
+    attribution = Actor(
+        type=approver.type,
+        id=approver.id,
+        agent_run_id=action.run_id,
+        agent_action_id=action.id,
+    )
+
+    try:
+        with actor_context(attribution):
+            result = apply_action(db, action)
+            crud.mark_action_decided(db, action, "approved", applied_result=result)
+            db.commit()
+    except ApplyError as exc:
+        db.rollback()
+        raise HTTPException(422, f"Cannot apply this action: {exc}") from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(action)
+    return _as_out(action)
 
 
 @router.post("/actions/{action_id}/reject", response_model=schemas.AgentActionOut)
@@ -81,4 +131,7 @@ def reject_action(action_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Action not found")
     if action.status != "pending":
         raise HTTPException(400, f"Action already {action.status}")
-    return crud.decide_action(db, action, "rejected")
+    crud.mark_action_decided(db, action, "rejected")
+    db.commit()
+    db.refresh(action)
+    return _as_out(action)

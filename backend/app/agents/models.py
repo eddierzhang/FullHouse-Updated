@@ -81,3 +81,5 @@ class AgentAction(Base):
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)  # pending|approved|rejected
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # What approving this action actually did, as reported by its applier.
+    applied_result: Mapped[str | None] = mapped_column(Text, nullable=True)

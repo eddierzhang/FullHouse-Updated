@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 
-import anthropic
 from sqlalchemy.orm import Session
 
 from app.agents import crud as agent_crud
+from app.agents.providers import get_provider
 from app.agents.registry import resolve_tools
-from app.config import settings
+from app.audit.context import AGENT, Actor, actor_context
 from app.db.session import SessionLocal
 
 
@@ -13,14 +13,8 @@ def _now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _extract_text(message) -> str:
-    if message is None:
-        return ""
-    return "\n".join(block.text for block in message.content if block.type == "text" and block.text)
-
-
 def execute_run(run_id: str, db: Session | None = None) -> str:
-    """Drive one agent run to completion via the Anthropic tool runner.
+    """Drive one agent run to completion via the configured LLM provider.
 
     Pass `db` when calling from within another run's own tool execution
     (delegation) so parent and child share one session/transaction; leave
@@ -30,6 +24,7 @@ def execute_run(run_id: str, db: Session | None = None) -> str:
     if db is None:
         db = SessionLocal()
     run = None
+    run_actor = None
     try:
         run = agent_crud.get_run(db, run_id)
         if run is None:
@@ -38,36 +33,45 @@ def execute_run(run_id: str, db: Session | None = None) -> str:
         if defn is None:
             raise ValueError(f"No agent definition with id {run.agent_definition_id}")
 
-        agent_crud.set_run_status(db, run, "running", started_at=_now())
-        agent_crud.add_event(db, run.id, "status_change", {"status": "running"})
+        # Everything this run touches is attributed to the agent. Nesting is
+        # correct for delegation: a subagent's context unwinds back to the
+        # Boss's when its run returns.
+        run_actor = Actor(type=AGENT, id=defn.key, agent_run_id=run.id)
+        with actor_context(run_actor):
+            agent_crud.set_run_status(db, run, "running", started_at=_now())
+            agent_crud.add_event(db, run.id, "status_change", {"status": "running"})
 
-        tools = resolve_tools(db, run, defn)
-        client = anthropic.Anthropic(api_key=settings.anthropic_api_key)
-        tool_runner = client.beta.messages.tool_runner(
-            model=defn.model,
-            max_tokens=16000,
-            system=defn.system_prompt,
-            tools=tools,
-            messages=[{"role": "user", "content": run.input or "Run now."}],
-        )
+            tools = resolve_tools(db, run, defn)
+            provider = get_provider()
+            model = provider.resolve_model(defn.model)
+            agent_crud.add_event(
+                db, run.id, "log", {"text": f"Running on {provider.key} model {model}"}
+            )
 
-        last_message = None
-        for message in tool_runner:
-            last_message = message
-            for block in message.content:
-                if block.type == "text" and block.text:
-                    agent_crud.add_event(db, run.id, "log", {"text": block.text})
-                elif block.type == "tool_use":
-                    agent_crud.add_event(db, run.id, "tool_call", {"tool": block.name, "input": block.input})
+            result = provider.run_agent_loop(
+                model=model,
+                system=defn.system_prompt,
+                tools=tools,
+                user_message=run.input or "Run now.",
+                emit=lambda event_type, payload: agent_crud.add_event(db, run.id, event_type, payload),
+            )
 
-        output_summary = _extract_text(last_message)
-        agent_crud.set_run_status(db, run, "succeeded", output_summary=output_summary, finished_at=_now())
-        agent_crud.add_event(db, run.id, "status_change", {"status": "succeeded"})
-        return output_summary
+            output_summary = result.text
+            agent_crud.set_run_status(
+                db,
+                run,
+                "succeeded",
+                output_summary=output_summary,
+                tokens_used=result.tokens_used,
+                finished_at=_now(),
+            )
+            agent_crud.add_event(db, run.id, "status_change", {"status": "succeeded"})
+            return output_summary
     except Exception as exc:
         if run is not None:
-            agent_crud.set_run_status(db, run, "failed", error=str(exc), finished_at=_now())
-            agent_crud.add_event(db, run.id, "status_change", {"status": "failed", "error": str(exc)})
+            with actor_context(run_actor or Actor(type=AGENT, agent_run_id=run.id)):
+                agent_crud.set_run_status(db, run, "failed", error=str(exc), finished_at=_now())
+                agent_crud.add_event(db, run.id, "status_change", {"status": "failed", "error": str(exc)})
         raise
     finally:
         if owns_session:

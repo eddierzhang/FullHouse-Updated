@@ -5,7 +5,7 @@ import { ACTION_TYPE_META, actionTitle, actionDetail } from './agentMeta'
 type Props = {
   actions: AgentAction[]
   agentsById: Map<string, AgentDefinition>
-  onApprove: (action: AgentAction) => void
+  onApprove: (action: AgentAction, overrides?: Record<string, unknown>) => void
   onReject: (action: AgentAction) => void
   onViewDetails: (action: AgentAction) => void
   busyActionId: string | null
@@ -13,6 +13,8 @@ type Props = {
 
 export function ActionCenter({ actions, agentsById, onApprove, onReject, onViewDetails, busyActionId }: Props) {
   const [filter, setFilter] = useState<'all' | 'urgent'>('all')
+  /** Operator-supplied values, keyed by action id, for proposals that left a blank. */
+  const [inputs, setInputs] = useState<Record<string, string>>({})
 
   const visible = actions.filter((a) => {
     if (filter === 'all') return true
@@ -47,6 +49,12 @@ export function ActionCenter({ actions, agentsById, onApprove, onReject, onViewD
           }
           const agent = agentsById.get(action.agent_definition_id)
           const busy = busyActionId === action.id
+          // A proposal can describe an intent it has no number for -- a BOGO
+          // carries no price. Ask here rather than failing after Approve.
+          const needsPrice = (action.needs_input ?? []).includes('new_price')
+          const blocked = action.appliable === false
+          const typed = inputs[action.id] ?? ''
+          const priceReady = !needsPrice || (typed.trim() !== '' && Number(typed) >= 0)
 
           return (
             <article className="task-row" key={action.id} data-priority={meta.tagClass === 'urgent' ? 'urgent' : 'normal'}>
@@ -58,15 +66,49 @@ export function ActionCenter({ actions, agentsById, onApprove, onReject, onViewD
                 </div>
                 <h4>{actionTitle(action.action_type, action.payload)}</h4>
                 <p>{actionDetail(action.action_type, action.payload)}</p>
+                {blocked && (
+                  <p className="task-blocked">
+                    Nothing can carry this out yet — reject it, or add support for{' '}
+                    <code>{action.action_type}</code>.
+                  </p>
+                )}
+                {needsPrice && !blocked && (
+                  <p className="task-blocked">
+                    This proposal names no price. Enter one to approve it.
+                  </p>
+                )}
               </div>
               <div className="task-actions">
+                {needsPrice && !blocked && (
+                  <input
+                    className="task-input"
+                    inputMode="decimal"
+                    placeholder="New price"
+                    value={typed}
+                    aria-label="New price for this promotion"
+                    onChange={(e) => setInputs({ ...inputs, [action.id]: e.target.value })}
+                  />
+                )}
                 <button className="secondary-button details-button" onClick={() => onViewDetails(action)}>
                   View details
                 </button>
                 <button className="reject-button" disabled={busy} onClick={() => onReject(action)}>
                   Reject
                 </button>
-                <button className="approve-button" disabled={busy} onClick={() => onApprove(action)}>
+                <button
+                  className="approve-button"
+                  disabled={busy || blocked || !priceReady}
+                  title={
+                    blocked
+                      ? 'Nothing in the system can carry this out yet'
+                      : needsPrice && !priceReady
+                        ? 'Enter the promotional price first'
+                        : undefined
+                  }
+                  onClick={() =>
+                    onApprove(action, needsPrice ? { new_price: Number(typed) } : undefined)
+                  }
+                >
                   {busy ? 'Working…' : 'Approve'}
                 </button>
               </div>

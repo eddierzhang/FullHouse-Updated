@@ -108,10 +108,17 @@ def get_action(db: Session, action_id: str) -> AgentAction | None:
     return db.get(AgentAction, action_id)
 
 
-def decide_action(db: Session, action: AgentAction, status: str) -> AgentAction:
+def mark_action_decided(
+    db: Session, action: AgentAction, status: str, applied_result: str | None = None
+) -> AgentAction:
+    """Stage an approve/reject decision. Deliberately does not commit.
+
+    The caller commits, so that a decision and the domain change it
+    authorises share one transaction -- otherwise a failure between the
+    two leaves an action marked approved whose effect never landed.
+    """
     action.status = status
     action.decided_at = _now()
+    action.applied_result = applied_result
     db.add(action)
-    db.commit()
-    db.refresh(action)
     return action
