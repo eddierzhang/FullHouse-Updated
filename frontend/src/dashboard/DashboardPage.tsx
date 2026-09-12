@@ -22,14 +22,21 @@ import {
 import { ActionCenter } from './ActionCenter'
 import { AgentTeam } from './AgentTeam'
 import { Drawer } from './Drawer'
+import { EmployeesPage } from './EmployeesPage'
 import { ForecastPanel } from './ForecastPanel'
+import { InventoryPanel } from './InventoryPanel'
+import { MarketingPage } from './MarketingPage'
+import { ProfitPage } from './ProfitPage'
+import { SupplyChainPage } from './SupplyChainPage'
 import { MetricsRow } from './MetricsRow'
 import { NewTaskModal } from './NewTaskModal'
 import { Sidebar } from './Sidebar'
 import { Toast, type ToastState } from './Toast'
 import { Topbar } from './Topbar'
+import { useHashRoute } from '../useHashRoute'
 
 export function DashboardPage() {
+  const route = useHashRoute()
   const [apiStatus, setApiStatus] = useState<'checking' | 'ok' | 'error'>('checking')
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [pendingActions, setPendingActions] = useState<AgentAction[]>([])
@@ -60,6 +67,14 @@ export function DashboardPage() {
     listActions('pending').then(setPendingActions).catch(() => {})
   }, [])
 
+  const refreshInventory = useCallback(() => {
+    listInventoryItems().then(setInventoryItems).catch(() => {})
+  }, [])
+
+  const refreshStaff = useCallback(() => {
+    listStaff().then(setStaff).catch(() => {})
+  }, [])
+
   useEffect(() => {
     fetchHealth()
       .then(() => setApiStatus('ok'))
@@ -67,23 +82,28 @@ export function DashboardPage() {
 
     listAgentDefinitions().then(setAgents).catch(() => {})
     refreshActions()
-    listInventoryItems().then(setInventoryItems).catch(() => {})
+    refreshInventory()
     listSuppliers().then(setSuppliers).catch(() => {})
     listStaff().then(setStaff).catch(() => {})
     listMenuItems().then(setMenuItems).catch(() => {})
     listOrders().then(setOrders).catch(() => {})
-  }, [refreshActions])
+  }, [refreshActions, refreshInventory])
 
   const boss = useMemo(() => agents.find((a) => a.role === 'boss'), [agents])
   const subagents = useMemo(() => agents.filter((a) => a.role === 'subagent'), [agents])
   const agentsById = useMemo(() => new Map(agents.map((a) => [a.id, a])), [agents])
+  const lowStockCount = useMemo(
+    () => inventoryItems.filter((i) => i.quantity_on_hand <= i.reorder_threshold).length,
+    [inventoryItems],
+  )
 
-  const handleApprove = async (action: AgentAction) => {
+  const handleApprove = async (action: AgentAction, overrides?: Record<string, unknown>) => {
     setBusyActionId(action.id)
     try {
-      await approveAction(action.id)
+      await approveAction(action.id, overrides)
       showToast('Action approved', 'Your agents are handling the next steps.')
       refreshActions()
+      refreshInventory()
       setDrawerAction(null)
     } catch (err) {
       showToast('Approval failed', err instanceof Error ? err.message : String(err))
@@ -140,7 +160,7 @@ export function DashboardPage() {
 
   return (
     <div className="app-shell">
-      <Sidebar open={sidebarOpen} apiStatus={apiStatus} agentCount={agents.length} pendingCount={pendingActions.length} />
+      <Sidebar open={sidebarOpen} apiStatus={apiStatus} agentCount={agents.length} pendingCount={pendingActions.length} lowStockCount={lowStockCount} route={route} />
 
       <main>
         <Topbar
@@ -151,6 +171,23 @@ export function DashboardPage() {
           }}
         />
 
+        {route === 'employees' ? (
+          <EmployeesPage
+            pendingActions={pendingActions}
+            showToast={showToast}
+            onStaffChanged={refreshStaff}
+          />
+        ) : route === 'marketing' ? (
+          <MarketingPage pendingActions={pendingActions} showToast={showToast} />
+        ) : route === 'profit' ? (
+          <ProfitPage showToast={showToast} />
+        ) : route === 'supply' ? (
+          <SupplyChainPage
+            pendingActions={pendingActions}
+            showToast={showToast}
+            onInventoryChanged={refreshInventory}
+          />
+        ) : (
         <div className="content" id="overview">
           <section className="welcome-row">
             <div>
@@ -198,7 +235,10 @@ export function DashboardPage() {
             />
             <ForecastPanel onRunScenario={handleRunScenario} scenarioBusy={scenarioBusy} scenarioResult={scenarioResult} />
           </section>
+
+          <InventoryPanel items={inventoryItems} suppliers={suppliers} />
         </div>
+        )}
       </main>
 
       <Drawer

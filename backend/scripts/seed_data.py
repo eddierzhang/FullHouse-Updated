@@ -11,6 +11,7 @@ from datetime import date, datetime, time, timedelta, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.agents.models import AgentDefinition  # noqa: E402
+from app.bootstrap import setup  # noqa: E402
 from app.db.session import SessionLocal  # noqa: E402
 from app.restaurant.models import (  # noqa: E402
     InventoryItem,
@@ -104,6 +105,7 @@ BOSS_DEF = dict(
 
 
 def seed():
+    setup()  # register change tracking before writing anything
     db = SessionLocal()
     try:
         if db.query(AgentDefinition).count() == 0:

@@ -37,6 +37,7 @@ class AgentRunOut(BaseModel):
     input: str | None
     output_summary: str | None
     error: str | None
+    tokens_used: int | None = None
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
@@ -62,3 +63,20 @@ class AgentActionOut(BaseModel):
     status: str
     created_at: datetime
     decided_at: datetime | None
+    applied_result: str | None = None
+    # Whether any applier can carry this out, and anything the proposal left
+    # for the operator to fill in. Lets the queue ask up front instead of
+    # failing after Approve is pressed.
+    appliable: bool = True
+    needs_input: list[str] = []
+
+
+class ApproveRequest(BaseModel):
+    """Values the operator supplies at approval time.
+
+    A proposal can describe an intent it has no number for -- "run a BOGO
+    on Garlic Bread" carries no price -- so the operator names it here and
+    it is merged into the payload before the applier runs.
+    """
+
+    overrides: dict = {}
