@@ -158,6 +158,8 @@ class MenuPerformanceOut(BaseModel):
     category: str
     price: float
     cost: float
+    #: "recipe" when computed from ingredients, "manual" when typed in.
+    cost_source: str = "manual"
     description: str | None
     is_available: bool
     units_sold: int
@@ -246,6 +248,44 @@ class LowStockOut(BaseModel):
     restock_cost: float
 
 
+class CoverOut(BaseModel):
+    id: str
+    name: str
+    unit: str
+    quantity_on_hand: float
+    daily_use: float | None
+    days_of_cover: float | None
+    lead_time_days: int | None
+    at_risk: bool
+
+
+class RecipeLineOut(BaseModel):
+    inventory_item_id: str
+    name: str
+    unit: str
+    quantity: float
+    unit_cost: float
+    line_cost: float
+
+
+class RecipeOut(BaseModel):
+    menu_item_id: str
+    menu_item_name: str
+    price: float
+    ingredient_cost: float
+    margin_pct: float
+    lines: list[RecipeLineOut]
+
+
+class RecipeLineIn(BaseModel):
+    inventory_item_id: str
+    quantity: float
+
+
+class RecipeIn(BaseModel):
+    lines: list[RecipeLineIn]
+
+
 class SupplyChainOut(BaseModel):
     total_stock_value: float
     supplier_count: int
@@ -255,5 +295,7 @@ class SupplyChainOut(BaseModel):
     low_stock_count: int
     restock_cost: float
     longest_lead_days: int
+    at_risk_count: int
     suppliers: list[SupplierExposureOut]
     low_stock: list[LowStockOut]
+    cover: list[CoverOut]

@@ -27,6 +27,7 @@ import { ForecastPanel } from './ForecastPanel'
 import { InventoryPanel } from './InventoryPanel'
 import { MarketingPage } from './MarketingPage'
 import { ProfitPage } from './ProfitPage'
+import { RunsPage } from './RunsPage'
 import { SupplyChainPage } from './SupplyChainPage'
 import { MetricsRow } from './MetricsRow'
 import { NewTaskModal } from './NewTaskModal'
@@ -53,10 +54,11 @@ export function DashboardPage() {
   const [modalDefaultAgent, setModalDefaultAgent] = useState<string | null>(null)
   const [toast, setToast] = useState<ToastState>(null)
   const [busyActionId, setBusyActionId] = useState<string | null>(null)
-  const [bossBusy, setBossBusy] = useState(false)
-  const [bossSummary, setBossSummary] = useState<string | null>(null)
+  const bossBusy = false
+  const bossSummary = null
   const [scenarioBusy, setScenarioBusy] = useState(false)
   const [scenarioResult, setScenarioResult] = useState<string | null>(null)
+  const [focusRunId, setFocusRunId] = useState<string | null>(null)
 
   const showToast = useCallback((title: string, subtitle?: string) => {
     setToast({ title, subtitle })
@@ -127,30 +129,22 @@ export function DashboardPage() {
   }
 
   const handleCreateTask = async (agentKey: string, task: string) => {
-    const isBoss = agentKey === boss?.key
-    if (isBoss) setBossBusy(true)
-    try {
-      const run = await triggerRun(agentKey, task)
-      setModalOpen(false)
-      if (isBoss) {
-        setBossSummary(run.output_summary ?? run.error ?? 'Run finished with no summary.')
-      }
-      showToast(
-        run.status === 'succeeded' ? 'Task complete' : 'Task finished with an issue',
-        run.output_summary ?? run.error ?? 'The assigned agent has finished.',
-      )
-      refreshActions()
-    } finally {
-      if (isBoss) setBossBusy(false)
-    }
+    // The run is queued, not finished -- follow it live rather than
+    // holding the UI open waiting for a summary that will not come.
+    const run = await triggerRun(agentKey, task)
+    setModalOpen(false)
+    setFocusRunId(run.id)
+    showToast('Task started', 'Watching it live in Runs.')
+    window.location.hash = '#runs'
   }
 
   const handleRunScenario = async () => {
     setScenarioBusy(true)
     try {
       const run = await triggerRun('profit', "Give me tonight's profit forecast and any optimization opportunities.")
-      setScenarioResult(run.output_summary ?? run.error ?? 'No result returned.')
-      showToast('Scenario complete', run.status === 'succeeded' ? 'The Profit Agent has a new forecast.' : 'The run finished with an error.')
+      setScenarioResult('Running — follow it in Runs.')
+      setFocusRunId(run.id)
+      showToast('Scenario started', 'The Profit Agent is working; watch it in Runs.')
     } catch (err) {
       showToast('Scenario failed', err instanceof Error ? err.message : String(err))
     } finally {
@@ -181,6 +175,8 @@ export function DashboardPage() {
           <MarketingPage pendingActions={pendingActions} showToast={showToast} />
         ) : route === 'profit' ? (
           <ProfitPage showToast={showToast} />
+        ) : route === 'runs' ? (
+          <RunsPage agents={agents} showToast={showToast} focusRunId={focusRunId} />
         ) : route === 'supply' ? (
           <SupplyChainPage
             pendingActions={pendingActions}

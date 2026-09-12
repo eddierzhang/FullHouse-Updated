@@ -48,11 +48,38 @@ export type AgentRun = {
   input: string | null
   output_summary: string | null
   error: string | null
+  tokens_used: number | null
   started_at: string | null
   finished_at: string | null
   created_at: string
 }
 
+export type RunEvent = {
+  type: string
+  seq?: number
+  run_id: string
+  payload?: Record<string, unknown>
+}
+export type AgentRunDetail = AgentRun & {
+  events: { id: number; seq: number; ts: string; type: string; payload: Record<string, unknown> }[]
+  child_run_ids: string[]
+}
+export type RecipeLine = {
+  inventory_item_id: string
+  name: string
+  unit: string
+  quantity: number
+  unit_cost: number
+  line_cost: number
+}
+export type Recipe = {
+  menu_item_id: string
+  menu_item_name: string
+  price: number
+  ingredient_cost: number
+  margin_pct: number
+  lines: RecipeLine[]
+}
 export type AgentAction = {
   id: string
   run_id: string
@@ -113,6 +140,8 @@ export type MenuPerformance = {
   category: string
   price: number
   cost: number
+  /** "recipe" when computed from ingredients, "manual" when typed in. */
+  cost_source: 'recipe' | 'manual'
   description: string | null
   is_available: boolean
   units_sold: number
@@ -275,4 +304,21 @@ export const updateInventoryItem = (
   apiJson<InventoryItem>(`/api/v1/restaurant/inventory-items/${id}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
+  })
+
+export const getRun = (id: string) => apiJson<AgentRunDetail>(`/api/v1/agents/runs/${id}`)
+
+export const cancelRun = (id: string) =>
+  apiJson<AgentRun>(`/api/v1/agents/runs/${id}/cancel`, { method: 'POST' })
+
+/** SSE URL for one run. Consumed with EventSource, not fetch. */
+export const runStreamUrl = (id: string) => `${API_BASE}/api/v1/agents/runs/${id}/stream`
+
+export const getRecipe = (menuItemId: string) =>
+  apiJson<Recipe>(`/api/v1/restaurant/menu-items/${menuItemId}/recipe`)
+
+export const setRecipe = (menuItemId: string, lines: { inventory_item_id: string; quantity: number }[]) =>
+  apiJson<Recipe>(`/api/v1/restaurant/menu-items/${menuItemId}/recipe`, {
+    method: 'PUT',
+    body: JSON.stringify({ lines }),
   })

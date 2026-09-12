@@ -6,10 +6,12 @@ from typing import Any
 import anthropic
 
 from app.agents.providers.base import (
+    CancelCheck,
     EventEmitter,
     LLMProvider,
     ProviderError,
     ProviderResult,
+    RunCancelledError,
 )
 from app.config import settings
 
@@ -38,6 +40,7 @@ class AnthropicProvider(LLMProvider):
         tools: Sequence[Any],
         user_message: str,
         emit: EventEmitter,
+        should_cancel: CancelCheck | None = None,
     ) -> ProviderResult:
         client = anthropic.Anthropic(api_key=self.api_key)
         try:
@@ -52,6 +55,8 @@ class AnthropicProvider(LLMProvider):
             last_message = None
             tokens = 0
             for message in tool_runner:
+                if should_cancel and should_cancel():
+                    raise RunCancelledError("Run cancelled between model turns")
                 last_message = message
                 usage = getattr(message, "usage", None)
                 if usage is not None:

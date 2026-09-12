@@ -32,8 +32,29 @@ def test_upgrade_head_creates_the_change_log(tmp_path, monkeypatch):
     assert "ix_change_log_entity" in indexes
 
 
-def test_downgrade_is_reversible(tmp_path, monkeypatch):
+def test_downgrade_unwinds_the_whole_schema(tmp_path, monkeypatch):
+    """Revision-agnostic: going to base must leave nothing behind.
+
+    Asserting on one migration's table broke the moment a later one
+    became head.
+    """
     db_path = tmp_path / "downgrade_check.db"
+    db_url = f"sqlite:///{db_path}"
+    monkeypatch.setattr("app.config.settings.database_url", db_url)
+    config = _alembic_config(db_url)
+
+    command.upgrade(config, "head")
+    inspector = inspect(create_engine(db_url))
+    assert {"change_log", "recipe_items", "agent_runs"} <= set(inspector.get_table_names())
+
+    command.downgrade(config, "base")
+
+    remaining = set(inspect(create_engine(db_url)).get_table_names()) - {"alembic_version"}
+    assert remaining == set()
+
+
+def test_one_step_downgrade_drops_only_the_head_migration(tmp_path, monkeypatch):
+    db_path = tmp_path / "one_step.db"
     db_url = f"sqlite:///{db_path}"
     monkeypatch.setattr("app.config.settings.database_url", db_url)
     config = _alembic_config(db_url)
@@ -41,6 +62,6 @@ def test_downgrade_is_reversible(tmp_path, monkeypatch):
     command.upgrade(config, "head")
     command.downgrade(config, "-1")
 
-    inspector = inspect(create_engine(db_url))
-    assert "change_log" not in inspector.get_table_names()
-    assert "agent_actions" in inspector.get_table_names()
+    tables = set(inspect(create_engine(db_url)).get_table_names())
+    assert "recipe_items" not in tables   # head migration undone
+    assert "change_log" in tables         # everything before it intact

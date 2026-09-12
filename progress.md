@@ -277,3 +277,55 @@ The seeded data makes the concentration callout real: Sysco Foods holds 91.1% of
 than a delivery schedule — approving a reorder still books goods as received immediately.
 No consumption rate either (the recipe/BOM gap), so "days of cover" cannot be computed and
 is deliberately not shown.
+
+## Phase 9 — Background runs with live streaming, and the recipe model (done)
+
+### Background execution + SSE
+
+`POST /agents/runs` used to call `execute_run` inline, holding the HTTP request open for
+the whole run — minutes once the Boss starts delegating. Runs now go to a thread pool
+(`app/agents/executor.py`) and the caller gets a queued run back in ~0s (202 Accepted).
+
+- `app/agents/broker.py` — in-process pub/sub. Runs execute on worker threads (SQLAlchemy,
+  the Anthropic SDK and httpx are all synchronous), while SSE is served on the event loop,
+  so publishing hops back with `call_soon_threadsafe`. The database stays the durable
+  record; this only makes it live.
+- `GET /agents/runs/{id}/stream` — SSE that replays recorded events before going live, so a
+  listener arriving late still sees the whole run, with a heartbeat for idle connections.
+- `POST /agents/runs/{id}/cancel` — cooperative: providers check between tool rounds, so a
+  model call already in flight finishes rather than being torn off mid-write. A cancelled
+  run is its own terminal state, not a failure.
+- Startup reconciliation marks runs left `queued`/`running` by a dead process as failed.
+  They cannot survive the process that was executing them, and left alone they claim to be
+  in progress forever.
+
+Frontend `RunsPage.tsx` at `#runs`: run history with the Boss delegation tree, and a live
+log driven by `EventSource`. Launching a task now navigates there instead of blocking on a
+summary that no longer arrives.
+
+### Recipes
+
+`recipe_items` (migration 95b108f65b06) links a dish to what one serving consumes.
+
+- Menu performance and profit now use the recipe-derived cost where one exists, falling
+  back to the typed-in figure otherwise, and report `cost_source` so the difference is
+  visible rather than implied.
+- `POST /orders` draws ingredients out of stock and refuses (409) rather than letting stock
+  go negative, naming every shortfall. Dishes without a recipe consume nothing — the link
+  is opt-in per dish.
+- Days of cover on the supply chain page is finally real: consumption comes from what sold
+  and the recipes behind it, compared against supplier lead time to flag anything that runs
+  out before a delivery could land. Null where unknowable, never zero.
+- `GET`/`PUT /menu-items/{id}/recipe`, with a `RecipeEditor` on the marketing page that
+  reprices the margin live as you type.
+
+Verified end to end: Margherita Pizza costed at $1.88 from ingredients (86.6% margin, versus
+the $4.20 that had been typed in), selling 4 drew down flour, cheese and tomatoes, a 50-pizza
+order was refused for tomatoes, a real agent run streamed 7 events live, and a Boss run was
+cancelled mid-flight.
+
+155 backend tests; frontend builds clean (36 modules).
+
+**Known gaps**: the broker is in-process, so a second worker would not see the events —
+Redis pub/sub is the next step if this is ever scaled out. Recipes are per-serving only, with
+no yields, prep batches or waste factor.

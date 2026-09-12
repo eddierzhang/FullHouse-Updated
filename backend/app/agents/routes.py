@@ -1,11 +1,19 @@
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.agents import crud, schemas
+from app.agents import crud, executor, schemas
 from app.agents.appliers import ApplyError, apply_action, is_appliable, missing_inputs
-from app.agents.runner import execute_run
+from app.agents.broker import TERMINAL, broker
 from app.audit.context import Actor, actor_context, get_actor
 from app.db.session import get_db
+
+#: How long an idle stream waits before sending a comment to keep the
+#: connection open through proxies that time out quiet responses.
+HEARTBEAT_SECONDS = 15
 
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
@@ -15,12 +23,15 @@ def list_definitions(db: Session = Depends(get_db)):
     return crud.list_definitions(db)
 
 
-@router.post("/runs", response_model=schemas.AgentRunOut)
+@router.post("/runs", response_model=schemas.AgentRunOut, status_code=202)
 def trigger_run(payload: schemas.TriggerRunRequest, db: Session = Depends(get_db)):
-    """Trigger an agent run and execute it to completion before responding.
-    This blocks for the duration of the run (including any delegated
-    subagent runs) - acceptable for a basic/demo backend; a later phase can
-    move this to a background task with the run polled or streamed."""
+    """Queue an agent run and return straight away.
+
+    The run executes on a worker thread; follow it on
+    `GET /runs/{id}/stream` or poll `GET /runs/{id}`. Running it inline
+    held the request open for the whole run -- minutes, once the Boss
+    starts delegating.
+    """
     defn = crud.get_definition_by_key(db, payload.agent_key)
     if defn is None:
         raise HTTPException(404, f"No agent with key '{payload.agent_key}'")
@@ -28,12 +39,74 @@ def trigger_run(payload: schemas.TriggerRunRequest, db: Session = Depends(get_db
         raise HTTPException(400, f"Agent '{defn.key}' is disabled")
 
     run = crud.create_run(db, defn.id, trigger_type="manual", input=payload.input)
-    try:
-        execute_run(run.id, db=db)
-    except Exception as exc:
-        raise HTTPException(500, f"Agent run failed: {exc}") from exc
+    executor.submit(run.id)
+    return run
+
+
+@router.post("/runs/{run_id}/cancel", response_model=schemas.AgentRunOut)
+def cancel_run(run_id: str, db: Session = Depends(get_db)):
+    """Ask a run to stop at its next checkpoint.
+
+    Cooperative: the provider checks between tool rounds, so a model call
+    already in flight finishes first rather than being torn off mid-write.
+    """
+    run = crud.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    if run.status not in ("queued", "running"):
+        raise HTTPException(400, f"Run is already {run.status}")
+
+    executor.request_cancel(run_id)
     db.refresh(run)
     return run
+
+
+@router.get("/runs/{run_id}/stream")
+async def stream_run(run_id: str, request: Request, db: Session = Depends(get_db)):
+    """Server-sent events for one run.
+
+    Replays what has already been recorded before switching to live, so a
+    listener that connects late still sees the whole run.
+    """
+    run = crud.get_run(db, run_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+
+    queue = broker.subscribe(run_id)
+    replay = [
+        {"type": e.type, "seq": e.seq, "run_id": run_id, "payload": e.payload}
+        for e in crud.list_events(db, run_id)
+    ]
+    finished = run.status in ("succeeded", "failed", "cancelled")
+
+    async def events():
+        try:
+            for event in replay:
+                yield f"data: {json.dumps(event)}\n\n"
+            if finished:
+                yield f"data: {json.dumps({'type': TERMINAL, 'run_id': run_id})}\n\n"
+                return
+
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=HEARTBEAT_SECONDS)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"
+                    continue
+
+                yield f"data: {json.dumps(event)}\n\n"
+                if event.get("type") == TERMINAL:
+                    return
+        finally:
+            broker.unsubscribe(run_id, queue)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.get("/runs", response_model=list[schemas.AgentRunOut])

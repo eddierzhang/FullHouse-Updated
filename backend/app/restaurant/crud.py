@@ -8,6 +8,7 @@ from app.restaurant.models import (
     MenuItem,
     Order,
     OrderItem,
+    RecipeItem,
     Shift,
     Staff,
     Supplier,
@@ -115,17 +116,21 @@ def menu_performance(db: Session) -> list[dict]:
         )
     }
 
+    from_recipe = recipe_costs(db)
     rows = []
     for item in list_menu_items(db):
         units, revenue = sold.get(item.id, (0, 0.0))
-        unit_margin = item.price - item.cost
+        # A recipe is a computed cost; the stored field is someone's estimate.
+        cost = from_recipe.get(item.id, item.cost)
+        unit_margin = item.price - cost
         rows.append(
             {
                 "id": item.id,
                 "name": item.name,
                 "category": item.category,
                 "price": item.price,
-                "cost": item.cost,
+                "cost": round(cost, 2),
+                "cost_source": "recipe" if item.id in from_recipe else "manual",
                 "description": item.description,
                 "is_available": item.is_available,
                 "units_sold": int(units),
@@ -155,8 +160,7 @@ def profit_summary(db: Session, days: int = 30) -> dict:
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=days - 1)
 
-    line_value = OrderItem.qty * OrderItem.unit_price
-    line_cost = OrderItem.qty * MenuItem.cost
+    from_recipe = recipe_costs(db)
 
     sold = (
         select(Order, OrderItem, MenuItem)
@@ -174,7 +178,7 @@ def profit_summary(db: Session, days: int = 30) -> dict:
     for order, item, menu_item in db.execute(sold):
         day = order.created_at.date().isoformat()
         value = item.qty * item.unit_price
-        cost = item.qty * menu_item.cost
+        cost = item.qty * from_recipe.get(menu_item.id, menu_item.cost)
         revenue += value
         cogs += cost
         order_ids.add(order.id)
@@ -255,6 +259,7 @@ def supply_chain_summary(db: Session) -> dict:
     suppliers = {s.id: s for s in list_suppliers(db)}
     items = list_inventory_items(db)
     total_value = sum(i.quantity_on_hand * i.unit_cost for i in items)
+    burn = daily_consumption(db)
 
     buckets: dict[str | None, dict] = {}
     for item in items:
@@ -316,6 +321,29 @@ def supply_chain_summary(db: Session) -> dict:
     )
     lead_times = [r["lead_time_days"] for r in low_rows if r["lead_time_days"] is not None]
 
+    # Days of cover needs a consumption rate, which only exists where a
+    # dish with a recipe actually sold. Null means unknowable, not zero.
+    cover_rows = []
+    for item in items:
+        rate = burn.get(item.id, 0.0)
+        supplier = suppliers.get(item.supplier_id) if item.supplier_id else None
+        lead = supplier.lead_time_days if supplier else None
+        days_left = round(item.quantity_on_hand / rate, 1) if rate > 0 else None
+        cover_rows.append(
+            {
+                "id": item.id,
+                "name": item.name,
+                "unit": item.unit,
+                "quantity_on_hand": item.quantity_on_hand,
+                "daily_use": round(rate, 3) if rate > 0 else None,
+                "days_of_cover": days_left,
+                "lead_time_days": lead,
+                # Running out before a replacement could arrive.
+                "at_risk": bool(days_left is not None and lead is not None and days_left <= lead),
+            }
+        )
+    cover_rows.sort(key=lambda r: (r["days_of_cover"] is None, r["days_of_cover"] or 0))
+
     return {
         "total_stock_value": round(total_value, 2),
         "supplier_count": len(supplier_rows),
@@ -325,6 +353,96 @@ def supply_chain_summary(db: Session) -> dict:
         "low_stock_count": len(low_rows),
         "restock_cost": round(sum(r["restock_cost"] for r in low_rows), 2),
         "longest_lead_days": max(lead_times) if lead_times else 0,
+        "at_risk_count": sum(1 for r in cover_rows if r["at_risk"]),
         "suppliers": supplier_rows,
         "low_stock": low_rows,
+        "cover": cover_rows,
     }
+
+
+def get_recipe(db: Session, menu_item_id: str) -> list[RecipeItem]:
+    return list(
+        db.scalars(select(RecipeItem).where(RecipeItem.menu_item_id == menu_item_id))
+    )
+
+
+def recipe_costs(db: Session) -> dict[str, float]:
+    """menu_item_id -> ingredient cost per serving, for dishes that have a recipe.
+
+    Absent from the map means "no recipe", which is different from a
+    recipe that costs nothing.
+    """
+    from sqlalchemy import func
+
+    rows = db.execute(
+        select(RecipeItem.menu_item_id, func.sum(RecipeItem.quantity * InventoryItem.unit_cost))
+        .join(InventoryItem, InventoryItem.id == RecipeItem.inventory_item_id)
+        .group_by(RecipeItem.menu_item_id)
+    )
+    return {menu_item_id: round(float(cost or 0.0), 4) for menu_item_id, cost in rows}
+
+
+def required_ingredients(db: Session, lines: list[tuple[str, int]]) -> dict[str, float]:
+    """inventory_item_id -> total quantity consumed by these (menu_item_id, qty) lines."""
+    needed: dict[str, float] = {}
+    for menu_item_id, quantity in lines:
+        for component in get_recipe(db, menu_item_id):
+            needed[component.inventory_item_id] = (
+                needed.get(component.inventory_item_id, 0.0) + component.quantity * quantity
+            )
+    return needed
+
+
+def check_and_deplete_stock(db: Session, lines: list[tuple[str, int]]) -> list[dict]:
+    """Draw an order's ingredients down from stock.
+
+    Raises ValueError naming every shortfall rather than letting stock go
+    negative -- a till that silently sells what the kitchen does not have
+    makes every downstream number wrong.
+    """
+    needed = required_ingredients(db, lines)
+    if not needed:
+        return []
+
+    shortfalls = []
+    depleted = []
+    for inventory_item_id, quantity in needed.items():
+        item = db.get(InventoryItem, inventory_item_id)
+        if item is None:
+            continue
+        if item.quantity_on_hand < quantity:
+            shortfalls.append(
+                f"{item.name} (need {quantity:g} {item.unit}, have {item.quantity_on_hand:g})"
+            )
+        depleted.append((item, quantity))
+
+    if shortfalls:
+        raise ValueError("Not enough stock: " + "; ".join(shortfalls))
+
+    used = []
+    for item, quantity in depleted:
+        item.quantity_on_hand = round(item.quantity_on_hand - quantity, 6)
+        db.add(item)
+        used.append({"inventory_item_id": item.id, "name": item.name, "quantity": quantity})
+    return used
+
+
+def daily_consumption(db: Session, days: int = 30) -> dict[str, float]:
+    """inventory_item_id -> average units consumed per day over the window.
+
+    Derived from what was actually sold and the recipes behind it, so it
+    only exists for ingredients that belong to a dish with a recipe.
+    """
+    from sqlalchemy import func
+
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=days - 1)
+
+    rows = db.execute(
+        select(RecipeItem.inventory_item_id, func.sum(RecipeItem.quantity * OrderItem.qty))
+        .join(OrderItem, OrderItem.menu_item_id == RecipeItem.menu_item_id)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(Order.status == "completed", func.date(Order.created_at) >= start.isoformat())
+        .group_by(RecipeItem.inventory_item_id)
+    )
+    return {item_id: float(total or 0.0) / days for item_id, total in rows}

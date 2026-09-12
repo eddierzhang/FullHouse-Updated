@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import {
   type AgentAction,
+  type InventoryItem,
   type MenuPerformance,
   createMenuItem,
   deleteMenuItem,
+  listInventoryItems,
   listMenuPerformance,
   updateMenuItem,
 } from '../api/client'
+import { RecipeEditor } from './RecipeEditor'
 
 type Props = {
   pendingActions: AgentAction[]
@@ -29,12 +32,17 @@ export function MarketingPage({ pendingActions, showToast }: Props) {
   const [draft, setDraft] = useState(BLANK)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editDraft, setEditDraft] = useState({ price: '', description: '' })
+  const [recipeFor, setRecipeFor] = useState<string | null>(null)
+  const [ingredients, setIngredients] = useState<InventoryItem[]>([])
 
   const refresh = useCallback(() => {
     listMenuPerformance().then(setRows).catch(() => {})
   }, [])
 
   useEffect(refresh, [refresh])
+  useEffect(() => {
+    listInventoryItems().then(setIngredients).catch(() => {})
+  }, [])
 
   const menuProposals = pendingActions.filter((a) => a.action_type === 'menu_change')
 
@@ -267,7 +275,12 @@ export function MarketingPage({ pendingActions, showToast }: Props) {
                   </small>
                 </div>
 
-                <div className="inv-num">{money(row.price)}</div>
+                <div className="inv-num">
+                  {money(row.price)}
+                  <small className={row.cost_source === 'recipe' ? 'mkt-costed' : 'mkt-guessed'}>
+                    {money(row.cost)} {row.cost_source === 'recipe' ? 'costed' : 'estimated'}
+                  </small>
+                </div>
 
                 <div className="inv-num">
                   <strong>{row.units_sold}</strong>
@@ -292,6 +305,12 @@ export function MarketingPage({ pendingActions, showToast }: Props) {
                     }}
                   >
                     Edit
+                  </button>
+                  <button
+                    className="secondary-button"
+                    onClick={() => setRecipeFor(recipeFor === row.id ? null : row.id)}
+                  >
+                    Recipe
                   </button>
                   <button
                     className="secondary-button"
@@ -321,6 +340,18 @@ export function MarketingPage({ pendingActions, showToast }: Props) {
                 </div>
 
                 <div className="mkt-share" style={{ width: `${share}%` }} aria-hidden />
+
+                {recipeFor === row.id && (
+                  <div className="mkt-recipe-slot">
+                    <RecipeEditor
+                      menuItemId={row.id}
+                      ingredients={ingredients}
+                      showToast={showToast}
+                      onSaved={refresh}
+                      onClose={() => setRecipeFor(null)}
+                    />
+                  </div>
+                )}
               </article>
             )
           })}

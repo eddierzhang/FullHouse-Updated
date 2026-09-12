@@ -18,6 +18,14 @@ from typing import Any
 #: "log", "tool_call", "tool_result".
 EventEmitter = Callable[[str, dict], None]
 
+#: Checked between tool rounds so a run can be stopped without killing the
+#: worker thread mid-write. Cooperative: a round already in flight finishes.
+CancelCheck = Callable[[], bool]
+
+
+class RunCancelledError(RuntimeError):
+    """The operator stopped this run."""
+
 
 class ProviderError(RuntimeError):
     """The model backend could not complete the run."""
@@ -69,5 +77,6 @@ class LLMProvider(ABC):
         tools: Sequence[Any],
         user_message: str,
         emit: EventEmitter,
+        should_cancel: CancelCheck | None = None,
     ) -> ProviderResult:
         """Run the model, execute any tools it calls, and return its final text."""

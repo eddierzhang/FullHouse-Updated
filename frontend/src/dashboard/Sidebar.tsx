@@ -29,6 +29,10 @@ export function Sidebar({ open, apiStatus, agentCount, pendingCount, lowStockCou
           <span>Agents</span>
           <span className="nav-badge">{agentCount}</span>
         </a>
+        <a className={navClass('runs')} href="#runs">
+          <span className="icon">◷</span>
+          <span>Runs</span>
+        </a>
         <a className={navClass('tasks')} href="#tasks">
           <span className="icon">✓</span>
           <span>Tasks</span>
