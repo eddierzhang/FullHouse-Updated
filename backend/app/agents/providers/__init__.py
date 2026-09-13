@@ -34,4 +34,9 @@ def get_provider(key: str | None = None) -> LLMProvider:
 
         return OllamaProvider()
 
-    raise ProviderError(f"Unknown LLM_PROVIDER {key!r}; expected 'anthropic' or 'ollama'")
+    if key == "scripted":
+        from app.agents.providers.scripted_provider import ScriptedProvider
+
+        return ScriptedProvider()
+
+    raise ProviderError(f"Unknown LLM_PROVIDER {key!r}; expected 'anthropic', 'ollama' or 'scripted'")

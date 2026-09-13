@@ -13,7 +13,7 @@ from app.config import settings  # noqa: E402
 from app.agents import models as agent_models  # noqa: E402,F401
 from app.audit import models as audit_models  # noqa: E402,F401
 from app.restaurant import models as restaurant_models  # noqa: E402,F401
-from app.db.session import Base  # noqa: E402
+from app.db.session import Base, normalize_database_url  # noqa: E402
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
@@ -24,7 +24,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", settings.database_url)
+config.set_main_option("sqlalchemy.url", normalize_database_url(settings.database_url))
 
 target_metadata = Base.metadata
 

@@ -1,7 +1,17 @@
 import uuid
 from datetime import date, datetime, time, timezone
 
-from sqlalchemy import Boolean, Date, DateTime, Float, ForeignKey, Integer, String, Time
+from sqlalchemy import (
+    Boolean,
+    Date,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Time,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -49,6 +59,9 @@ class MenuItem(Base):
     cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Set while a promotion is running: the price to restore, and when.
+    regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    promo_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Order(Base):
@@ -98,3 +111,26 @@ class Shift(Base):
     role: Mapped[str] = mapped_column(String(64), nullable=False)
 
     staff: Mapped[Staff] = relationship()
+
+
+class RecipeItem(Base):
+    """What one serving of a menu item consumes.
+
+    The link that was missing: without it a dish's cost is a number
+    somebody typed, orders never touch stock, and there is no way to know
+    how fast an ingredient is being used up.
+    """
+
+    __tablename__ = "recipe_items"
+    __table_args__ = (UniqueConstraint("menu_item_id", "inventory_item_id", name="uq_recipe_pair"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    menu_item_id: Mapped[str] = mapped_column(String(32), ForeignKey("menu_items.id"), nullable=False)
+    inventory_item_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("inventory_items.id"), nullable=False
+    )
+    #: Consumed per serving, in the inventory item's own unit.
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+
+    menu_item: Mapped[MenuItem] = relationship()
+    inventory_item: Mapped[InventoryItem] = relationship()

@@ -39,3 +39,13 @@ def test_seed_script_records_its_writes(tmp_path):
     assert menu_items > 0
     assert changes >= menu_items, "seeded rows were written without a change record"
     assert actors == ["system"], "seeding is not attributable to a human or agent"
+
+
+def test_hosted_postgres_urls_use_the_installed_driver():
+    """Render and Neon hand out bare postgres:// URLs; psycopg2 is not installed."""
+    from app.db.session import normalize_database_url
+
+    assert normalize_database_url("postgres://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+    assert normalize_database_url("postgresql://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+    assert normalize_database_url("postgresql+psycopg://u:p@h/db") == "postgresql+psycopg://u:p@h/db"
+    assert normalize_database_url("sqlite:///./app.db") == "sqlite:///./app.db"

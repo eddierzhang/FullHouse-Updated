@@ -3,7 +3,16 @@ from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.restaurant import crud, schemas
-from app.restaurant.models import InventoryItem, MenuItem, Order, OrderItem, Shift, Staff, Supplier
+from app.restaurant.models import (
+    InventoryItem,
+    MenuItem,
+    Order,
+    OrderItem,
+    RecipeItem,
+    Shift,
+    Staff,
+    Supplier,
+)
 
 router = APIRouter(prefix="/api/v1/restaurant", tags=["restaurant"])
 
@@ -87,6 +96,11 @@ def list_orders(db: Session = Depends(get_db)):
 
 @router.post("/orders", response_model=schemas.OrderOut)
 def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db)):
+    """Record a sale and draw its ingredients out of stock.
+
+    Dishes without a recipe consume nothing, so an order of those still
+    goes through -- the link is opt-in per dish.
+    """
     order = Order(channel=payload.channel, table_number=payload.table_number, status="completed")
     total = 0.0
     for line in payload.items:
@@ -99,10 +113,87 @@ def create_order(payload: schemas.OrderCreate, db: Session = Depends(get_db)):
             OrderItem(menu_item_id=menu_item.id, qty=line.qty, unit_price=unit_price, notes=line.notes)
         )
     order.total = total
+
+    try:
+        crud.check_and_deplete_stock(db, [(line.menu_item_id, line.qty) for line in payload.items])
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
     db.add(order)
     db.commit()
     db.refresh(order)
     return order
+
+
+@router.get("/menu-items/{menu_item_id}/recipe", response_model=schemas.RecipeOut)
+def get_recipe(menu_item_id: str, db: Session = Depends(get_db)):
+    item = db.get(MenuItem, menu_item_id)
+    if not item:
+        raise HTTPException(404, "Menu item not found")
+
+    lines = []
+    ingredient_cost = 0.0
+    for component in crud.get_recipe(db, menu_item_id):
+        ingredient = component.inventory_item
+        line_cost = component.quantity * ingredient.unit_cost
+        ingredient_cost += line_cost
+        lines.append(
+            {
+                "inventory_item_id": ingredient.id,
+                "name": ingredient.name,
+                "unit": ingredient.unit,
+                "quantity": component.quantity,
+                "unit_cost": ingredient.unit_cost,
+                "line_cost": round(line_cost, 2),
+            }
+        )
+    lines.sort(key=lambda line: line["line_cost"], reverse=True)
+
+    return {
+        "menu_item_id": item.id,
+        "menu_item_name": item.name,
+        "price": item.price,
+        "ingredient_cost": round(ingredient_cost, 2),
+        "margin_pct": round(((item.price - ingredient_cost) / item.price) * 100, 1) if item.price else 0.0,
+        "lines": lines,
+    }
+
+
+@router.put("/menu-items/{menu_item_id}/recipe", response_model=schemas.RecipeOut)
+def set_recipe(menu_item_id: str, payload: schemas.RecipeIn, db: Session = Depends(get_db)):
+    """Replace a dish's recipe wholesale.
+
+    A replace rather than per-line edits: the UI edits the whole recipe
+    at once, and this keeps it from drifting out of sync.
+    """
+    item = db.get(MenuItem, menu_item_id)
+    if not item:
+        raise HTTPException(404, "Menu item not found")
+
+    seen = set()
+    for line in payload.lines:
+        if line.quantity <= 0:
+            raise HTTPException(422, "Each ingredient quantity must be greater than zero")
+        if not db.get(InventoryItem, line.inventory_item_id):
+            raise HTTPException(404, f"Inventory item {line.inventory_item_id} not found")
+        if line.inventory_item_id in seen:
+            raise HTTPException(422, "The same ingredient is listed twice")
+        seen.add(line.inventory_item_id)
+
+    for existing in crud.get_recipe(db, menu_item_id):
+        db.delete(existing)
+    db.flush()
+    for line in payload.lines:
+        db.add(
+            RecipeItem(
+                menu_item_id=menu_item_id,
+                inventory_item_id=line.inventory_item_id,
+                quantity=line.quantity,
+            )
+        )
+    db.commit()
+    return get_recipe(menu_item_id, db)
 
 
 @router.patch("/staff/{staff_id}", response_model=schemas.StaffOut)
@@ -190,6 +281,11 @@ def update_menu_item(menu_item_id: str, payload: schemas.MenuItemUpdate, db: Ses
 
     for field, value in fields.items():
         setattr(item, field, value)
+    if "price" in fields:
+        # Editing the price by hand ends any promotion; otherwise its expiry
+        # would later overwrite this price with the pre-promotion one.
+        item.regular_price = None
+        item.promo_ends_at = None
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -293,3 +389,13 @@ def update_inventory_item(
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.get("/forecast", response_model=schemas.ForecastOut)
+def forecast(
+    days: int = Query(default=7, ge=1, le=28),
+    history: int = Query(default=28, ge=7, le=180),
+    db: Session = Depends(get_db),
+):
+    """Projected revenue and gross profit, built from completed trading days."""
+    return crud.forecast(db, days_ahead=days, history_days=history)

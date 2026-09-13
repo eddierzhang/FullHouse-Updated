@@ -18,10 +18,12 @@ from typing import Any
 import httpx
 
 from app.agents.providers.base import (
+    CancelCheck,
     EventEmitter,
     LLMProvider,
     ProviderError,
     ProviderResult,
+    RunCancelledError,
     to_function_schema,
 )
 from app.config import settings
@@ -96,6 +98,7 @@ class OllamaProvider(LLMProvider):
         tools: Sequence[Any],
         user_message: str,
         emit: EventEmitter,
+        should_cancel: CancelCheck | None = None,
     ) -> ProviderResult:
         tools_by_name = {tool.name: tool for tool in tools}
         declarations = [to_function_schema(tool) for tool in tools]
@@ -106,6 +109,8 @@ class OllamaProvider(LLMProvider):
         tokens = 0
 
         for _ in range(self.max_rounds):
+            if should_cancel and should_cancel():
+                raise RunCancelledError("Run cancelled before the next model call")
             response = self._chat(model, messages, declarations)
             tokens += int(response.get("prompt_eval_count") or 0)
             tokens += int(response.get("eval_count") or 0)

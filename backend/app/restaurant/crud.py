@@ -8,6 +8,7 @@ from app.restaurant.models import (
     MenuItem,
     Order,
     OrderItem,
+    RecipeItem,
     Shift,
     Staff,
     Supplier,
@@ -115,19 +116,25 @@ def menu_performance(db: Session) -> list[dict]:
         )
     }
 
+    from_recipe = recipe_costs(db)
     rows = []
     for item in list_menu_items(db):
         units, revenue = sold.get(item.id, (0, 0.0))
-        unit_margin = item.price - item.cost
+        # A recipe is a computed cost; the stored field is someone's estimate.
+        cost = from_recipe.get(item.id, item.cost)
+        unit_margin = item.price - cost
         rows.append(
             {
                 "id": item.id,
                 "name": item.name,
                 "category": item.category,
                 "price": item.price,
-                "cost": item.cost,
+                "cost": round(cost, 2),
+                "cost_source": "recipe" if item.id in from_recipe else "manual",
                 "description": item.description,
                 "is_available": item.is_available,
+                "regular_price": item.regular_price,
+                "promo_ends_at": item.promo_ends_at,
                 "units_sold": int(units),
                 "revenue": round(float(revenue), 2),
                 "margin": round(unit_margin, 2),
@@ -155,14 +162,13 @@ def profit_summary(db: Session, days: int = 30) -> dict:
     end = datetime.now(timezone.utc).date()
     start = end - timedelta(days=days - 1)
 
-    line_value = OrderItem.qty * OrderItem.unit_price
-    line_cost = OrderItem.qty * MenuItem.cost
+    from_recipe = recipe_costs(db)
 
     sold = (
         select(Order, OrderItem, MenuItem)
         .join(OrderItem, OrderItem.order_id == Order.id)
         .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
-        .where(Order.status == "completed", func.date(Order.created_at) >= start.isoformat())
+        .where(Order.status == "completed", func.date(Order.created_at) >= start)
     )
 
     by_day: dict[str, dict] = {}
@@ -172,9 +178,9 @@ def profit_summary(db: Session, days: int = 30) -> dict:
     revenue = cogs = 0.0
 
     for order, item, menu_item in db.execute(sold):
-        day = order.created_at.date().isoformat()
+        day = utc_day(order.created_at)
         value = item.qty * item.unit_price
-        cost = item.qty * menu_item.cost
+        cost = item.qty * from_recipe.get(menu_item.id, menu_item.cost)
         revenue += value
         cogs += cost
         order_ids.add(order.id)
@@ -255,6 +261,7 @@ def supply_chain_summary(db: Session) -> dict:
     suppliers = {s.id: s for s in list_suppliers(db)}
     items = list_inventory_items(db)
     total_value = sum(i.quantity_on_hand * i.unit_cost for i in items)
+    burn = daily_consumption(db)
 
     buckets: dict[str | None, dict] = {}
     for item in items:
@@ -316,6 +323,29 @@ def supply_chain_summary(db: Session) -> dict:
     )
     lead_times = [r["lead_time_days"] for r in low_rows if r["lead_time_days"] is not None]
 
+    # Days of cover needs a consumption rate, which only exists where a
+    # dish with a recipe actually sold. Null means unknowable, not zero.
+    cover_rows = []
+    for item in items:
+        rate = burn.get(item.id, 0.0)
+        supplier = suppliers.get(item.supplier_id) if item.supplier_id else None
+        lead = supplier.lead_time_days if supplier else None
+        days_left = round(item.quantity_on_hand / rate, 1) if rate > 0 else None
+        cover_rows.append(
+            {
+                "id": item.id,
+                "name": item.name,
+                "unit": item.unit,
+                "quantity_on_hand": item.quantity_on_hand,
+                "daily_use": round(rate, 3) if rate > 0 else None,
+                "days_of_cover": days_left,
+                "lead_time_days": lead,
+                # Running out before a replacement could arrive.
+                "at_risk": bool(days_left is not None and lead is not None and days_left <= lead),
+            }
+        )
+    cover_rows.sort(key=lambda r: (r["days_of_cover"] is None, r["days_of_cover"] or 0))
+
     return {
         "total_stock_value": round(total_value, 2),
         "supplier_count": len(supplier_rows),
@@ -325,6 +355,187 @@ def supply_chain_summary(db: Session) -> dict:
         "low_stock_count": len(low_rows),
         "restock_cost": round(sum(r["restock_cost"] for r in low_rows), 2),
         "longest_lead_days": max(lead_times) if lead_times else 0,
+        "at_risk_count": sum(1 for r in cover_rows if r["at_risk"]),
         "suppliers": supplier_rows,
         "low_stock": low_rows,
+        "cover": cover_rows,
+    }
+
+
+def get_recipe(db: Session, menu_item_id: str) -> list[RecipeItem]:
+    return list(
+        db.scalars(select(RecipeItem).where(RecipeItem.menu_item_id == menu_item_id))
+    )
+
+
+def recipe_costs(db: Session) -> dict[str, float]:
+    """menu_item_id -> ingredient cost per serving, for dishes that have a recipe.
+
+    Absent from the map means "no recipe", which is different from a
+    recipe that costs nothing.
+    """
+    from sqlalchemy import func
+
+    rows = db.execute(
+        select(RecipeItem.menu_item_id, func.sum(RecipeItem.quantity * InventoryItem.unit_cost))
+        .join(InventoryItem, InventoryItem.id == RecipeItem.inventory_item_id)
+        .group_by(RecipeItem.menu_item_id)
+    )
+    return {menu_item_id: round(float(cost or 0.0), 4) for menu_item_id, cost in rows}
+
+
+def required_ingredients(db: Session, lines: list[tuple[str, int]]) -> dict[str, float]:
+    """inventory_item_id -> total quantity consumed by these (menu_item_id, qty) lines."""
+    needed: dict[str, float] = {}
+    for menu_item_id, quantity in lines:
+        for component in get_recipe(db, menu_item_id):
+            needed[component.inventory_item_id] = (
+                needed.get(component.inventory_item_id, 0.0) + component.quantity * quantity
+            )
+    return needed
+
+
+def check_and_deplete_stock(db: Session, lines: list[tuple[str, int]]) -> list[dict]:
+    """Draw an order's ingredients down from stock.
+
+    Raises ValueError naming every shortfall rather than letting stock go
+    negative -- a till that silently sells what the kitchen does not have
+    makes every downstream number wrong.
+    """
+    needed = required_ingredients(db, lines)
+    if not needed:
+        return []
+
+    shortfalls = []
+    depleted = []
+    for inventory_item_id, quantity in needed.items():
+        item = db.get(InventoryItem, inventory_item_id)
+        if item is None:
+            continue
+        if item.quantity_on_hand < quantity:
+            shortfalls.append(
+                f"{item.name} (need {quantity:g} {item.unit}, have {item.quantity_on_hand:g})"
+            )
+        depleted.append((item, quantity))
+
+    if shortfalls:
+        raise ValueError("Not enough stock: " + "; ".join(shortfalls))
+
+    used = []
+    for item, quantity in depleted:
+        item.quantity_on_hand = round(item.quantity_on_hand - quantity, 6)
+        db.add(item)
+        used.append({"inventory_item_id": item.id, "name": item.name, "quantity": quantity})
+    return used
+
+
+def daily_consumption(db: Session, days: int = 30) -> dict[str, float]:
+    """inventory_item_id -> average units consumed per day over the window.
+
+    Derived from what was actually sold and the recipes behind it, so it
+    only exists for ingredients that belong to a dish with a recipe.
+    """
+    from sqlalchemy import func
+
+    end = datetime.now(timezone.utc).date()
+    start = end - timedelta(days=days - 1)
+
+    rows = db.execute(
+        select(RecipeItem.inventory_item_id, func.sum(RecipeItem.quantity * OrderItem.qty))
+        .join(OrderItem, OrderItem.menu_item_id == RecipeItem.menu_item_id)
+        .join(Order, Order.id == OrderItem.order_id)
+        .where(Order.status == "completed", func.date(Order.created_at) >= start)
+        .group_by(RecipeItem.inventory_item_id)
+    )
+    return {item_id: float(total or 0.0) / days for item_id, total in rows}
+
+
+def utc_day(moment: datetime) -> str:
+    """The UTC calendar day of a stored timestamp, as YYYY-MM-DD.
+
+    SQLite hands timestamps back naive (they were written in UTC); Postgres
+    hands them back aware. Both must bucket into the same day.
+    """
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc)
+    return moment.date().isoformat()
+
+
+def forecast(db: Session, days_ahead: int = 7, history_days: int = 28) -> dict:
+    """Project revenue and gross profit for the coming days from real sales.
+
+    Deliberately simple and explicit about its footing, replacing a panel
+    that showed invented numbers:
+
+    * weekday means once there are two full weeks of trading to learn the
+      weekly shape from;
+    * otherwise the plain daily mean over the days the restaurant has
+      actually been trading (not the empty days before its first order).
+
+    The range is one standard deviation either side, floored at zero.
+    Only complete days count -- a partly-traded today would drag every
+    projection down.
+    """
+    from statistics import mean, pstdev
+
+    today = datetime.now(timezone.utc).date()
+    history_end = today - timedelta(days=1)
+    summary = profit_summary(db, days=history_days + 1)
+    history = [d for d in summary["daily"] if d["date"] <= history_end.isoformat()]
+
+    first_trade = next((d["date"] for d in history if d["orders"] > 0), None)
+    if first_trade is None:
+        return {
+            "method": "none",
+            "basis_days": 0,
+            "confidence": "none",
+            "message": "No completed trading days yet, so there is nothing to project from.",
+            "history": history,
+            "days": [],
+            "total_revenue": 0.0,
+            "total_profit": 0.0,
+        }
+
+    trading = [d for d in history if d["date"] >= first_trade]
+    basis_days = len(trading)
+    weekday_mode = basis_days >= 14
+
+    def weekday(iso: str) -> int:
+        return date.fromisoformat(iso).weekday()
+
+    projected = []
+    for offset in range(1, days_ahead + 1):
+        target = today + timedelta(days=offset - 1)
+        pool = [d for d in trading if weekday(d["date"]) == target.weekday()] if weekday_mode else trading
+        revenues = [d["revenue"] for d in pool] or [0.0]
+        profits = [d["profit"] for d in pool] or [0.0]
+        spread = pstdev(revenues) if len(revenues) > 1 else 0.0
+        projected.append(
+            {
+                "date": target.isoformat(),
+                "revenue": round(mean(revenues), 2),
+                "profit": round(mean(profits), 2),
+                "low": round(max(0.0, mean(revenues) - spread), 2),
+                "high": round(mean(revenues) + spread, 2),
+            }
+        )
+
+    confidence = "high" if basis_days >= 28 else "medium" if basis_days >= 14 else "low"
+    method = "weekday" if weekday_mode else "average"
+    explanation = (
+        f"Average of each weekday over {basis_days} trading days."
+        if weekday_mode
+        else f"Daily average over {basis_days} trading day{'s' if basis_days != 1 else ''}; "
+        f"weekday patterns need at least 14."
+    )
+
+    return {
+        "method": method,
+        "basis_days": basis_days,
+        "confidence": confidence,
+        "message": explanation,
+        "history": trading,
+        "days": projected,
+        "total_revenue": round(sum(d["revenue"] for d in projected), 2),
+        "total_profit": round(sum(d["profit"] for d in projected), 2),
     }

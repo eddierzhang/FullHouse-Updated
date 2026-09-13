@@ -1,6 +1,14 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from datetime import datetime, timezone
+
+from app.agents import executor, scheduler
+from app.agents.broker import broker
 from app.agents.routes import router as agents_router
 from app.bootstrap import setup
 from app.audit.middleware import AuditActorMiddleware
@@ -12,7 +20,54 @@ from app.restaurant.routes import router as restaurant_router
 # unrecorded during startup.
 setup()
 
-app = FastAPI(title="Restaurant Ops API")
+logger = logging.getLogger(__name__)
+
+
+def _recover_orphaned_runs(db=None) -> int:
+    """Close out runs left mid-flight by a previous process.
+
+    Runs execute in this process's thread pool, so anything still marked
+    queued or running at startup died with the last one. Left alone they
+    sit in the UI forever claiming to be in progress.
+    """
+    from app.agents.models import AgentRun
+    from app.audit.context import SYSTEM_ACTOR, actor_context
+    from app.db.session import SessionLocal
+
+    owns_session = db is None
+    db = db or SessionLocal()
+    try:
+        orphans = db.query(AgentRun).filter(AgentRun.status.in_(("queued", "running"))).all()
+        if not orphans:
+            return 0
+        with actor_context(SYSTEM_ACTOR):
+            for run in orphans:
+                run.status = "failed"
+                run.error = "Interrupted: the server restarted while this run was in flight."
+                run.finished_at = datetime.now(timezone.utc)
+                db.add(run)
+            db.commit()
+        return len(orphans)
+    finally:
+        if owns_session:
+            db.close()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Worker threads publish run events back onto this loop.
+    broker.bind_loop(asyncio.get_running_loop())
+    recovered = _recover_orphaned_runs()
+    if recovered:
+        logger.warning("marked %d interrupted run(s) as failed at startup", recovered)
+    if settings.scheduler_enabled:
+        scheduler.start()
+    yield
+    scheduler.shutdown()
+    executor.shutdown()
+
+
+app = FastAPI(title="Restaurant Ops API", lifespan=lifespan)
 
 app.add_middleware(AuditActorMiddleware)
 app.add_middleware(

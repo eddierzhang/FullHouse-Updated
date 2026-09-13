@@ -3,7 +3,9 @@ from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 
 from app.agents import crud as agent_crud
+from app.agents.broker import broker
 from app.agents.providers import get_provider
+from app.agents.providers.base import RunCancelledError
 from app.agents.registry import resolve_tools
 from app.audit.context import AGENT, Actor, actor_context
 from app.db.session import SessionLocal
@@ -40,6 +42,7 @@ def execute_run(run_id: str, db: Session | None = None) -> str:
         with actor_context(run_actor):
             agent_crud.set_run_status(db, run, "running", started_at=_now())
             agent_crud.add_event(db, run.id, "status_change", {"status": "running"})
+            broker.publish(run.id, {"type": "status_change", "run_id": run.id, "payload": {"status": "running"}})
 
             tools = resolve_tools(db, run, defn)
             provider = get_provider()
@@ -48,12 +51,22 @@ def execute_run(run_id: str, db: Session | None = None) -> str:
                 db, run.id, "log", {"text": f"Running on {provider.key} model {model}"}
             )
 
+            def emit(event_type: str, payload: dict) -> None:
+                event = agent_crud.add_event(db, run.id, event_type, payload)
+                broker.publish(
+                    run.id,
+                    {"type": event_type, "seq": event.seq, "run_id": run.id, "payload": payload},
+                )
+
+            from app.agents import executor
+
             result = provider.run_agent_loop(
                 model=model,
                 system=defn.system_prompt,
                 tools=tools,
                 user_message=run.input or "Run now.",
-                emit=lambda event_type, payload: agent_crud.add_event(db, run.id, event_type, payload),
+                emit=emit,
+                should_cancel=lambda: executor.is_cancelled(run.id),
             )
 
             output_summary = result.text
@@ -66,12 +79,28 @@ def execute_run(run_id: str, db: Session | None = None) -> str:
                 finished_at=_now(),
             )
             agent_crud.add_event(db, run.id, "status_change", {"status": "succeeded"})
+            broker.publish(
+                run.id,
+                {"type": "status_change", "run_id": run.id,
+                 "payload": {"status": "succeeded", "output_summary": output_summary,
+                             "tokens_used": result.tokens_used}},
+            )
             return output_summary
+    except RunCancelledError as exc:
+        if run is not None:
+            with actor_context(run_actor or Actor(type=AGENT, agent_run_id=run.id)):
+                agent_crud.set_run_status(db, run, "cancelled", error=str(exc), finished_at=_now())
+                agent_crud.add_event(db, run.id, "status_change", {"status": "cancelled"})
+            broker.publish(run.id, {"type": "status_change", "run_id": run.id,
+                                    "payload": {"status": "cancelled"}})
+        return ""
     except Exception as exc:
         if run is not None:
             with actor_context(run_actor or Actor(type=AGENT, agent_run_id=run.id)):
                 agent_crud.set_run_status(db, run, "failed", error=str(exc), finished_at=_now())
                 agent_crud.add_event(db, run.id, "status_change", {"status": "failed", "error": str(exc)})
+            broker.publish(run.id, {"type": "status_change", "run_id": run.id,
+                                    "payload": {"status": "failed", "error": str(exc)}})
         raise
     finally:
         if owns_session:
