@@ -4,7 +4,6 @@ from datetime import date, datetime, time, timezone
 from sqlalchemy import (
     Boolean,
     Date,
-    DateTime,
     Float,
     ForeignKey,
     Integer,
@@ -15,6 +14,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 def _uuid() -> str:
@@ -61,7 +61,7 @@ class MenuItem(Base):
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
     # Set while a promotion is running: the price to restore, and when.
     regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    promo_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    promo_ends_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
 
 
 class Order(Base):
@@ -72,7 +72,7 @@ class Order(Base):
     channel: Mapped[str] = mapped_column(String(32), default="dine_in", nullable=False)  # dine_in|takeout|delivery
     table_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     total: Mapped[float] = mapped_column(Float, default=0, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
 
     items: Mapped[list["OrderItem"]] = relationship(back_populates="order", cascade="all, delete-orphan")
 

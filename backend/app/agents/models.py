@@ -1,10 +1,11 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.db.types import UTCDateTime
 
 
 def _uuid() -> str:
@@ -28,7 +29,7 @@ class AgentDefinition(Base):
     tool_allowlist: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
     schedule_cron: Mapped[str | None] = mapped_column(String(64), nullable=True)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
 
 
 class AgentRun(Base):
@@ -45,9 +46,9 @@ class AgentRun(Base):
     output_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    started_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
 
     agent_definition: Mapped[AgentDefinition] = relationship()
     events: Mapped[list["AgentEvent"]] = relationship(
@@ -62,7 +63,7 @@ class AgentEvent(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     run_id: Mapped[str] = mapped_column(String(32), ForeignKey("agent_runs.id"), nullable=False)
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
-    ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    ts: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
     type: Mapped[str] = mapped_column(String(24), nullable=False)
     # log|tool_call|tool_result|status_change|delegation
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -79,7 +80,7 @@ class AgentAction(Base):
     action_type: Mapped[str] = mapped_column(String(64), nullable=False)
     payload: Mapped[dict] = mapped_column(JSON, nullable=False)
     status: Mapped[str] = mapped_column(String(16), default="pending", nullable=False)  # pending|approved|rejected
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
-    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(UTCDateTime(), default=_now)
+    decided_at: Mapped[datetime | None] = mapped_column(UTCDateTime(), nullable=True)
     # What approving this action actually did, as reported by its applier.
     applied_result: Mapped[str | None] = mapped_column(Text, nullable=True)
