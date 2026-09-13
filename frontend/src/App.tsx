@@ -1,7 +1,5 @@
-import { DashboardPage } from './dashboard/DashboardPage'
+import { AppShell } from './app/AppShell'
 
-function App() {
-  return <DashboardPage />
+export default function App() {
+  return <AppShell />
 }
-
-export default App
