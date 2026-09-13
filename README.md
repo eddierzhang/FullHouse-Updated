@@ -2,17 +2,35 @@
 
 **An operations platform for a restaurant, run by a team of AI agents that propose — and a manager who decides.**
 
-Maestro, the lead agent, delegates to five specialists (inventory, suppliers, staff, menu, profit). Each can read the restaurant's
-real data and propose changes: reorder stock, schedule a shift, run a promotion. Nothing takes effect until a person
-approves it, every change is recorded with who made it and why, and anything can be reverted.
-
 [![CI](https://github.com/eddierzhang/FullHouse-Updated/actions/workflows/ci.yml/badge.svg)](https://github.com/eddierzhang/FullHouse-Updated/actions/workflows/ci.yml)
+![Python 3.11](https://img.shields.io/badge/python-3.11-3776AB)
+![React 19](https://img.shields.io/badge/react-19-149ECA)
+[![License: MIT](https://img.shields.io/badge/license-MIT-0f766e)](LICENSE)
 
-![Overview](docs/screenshots/overview.png)
+Maestro, the lead agent, hands work to five specialists — inventory, suppliers, staff, menu and profit — and they run
+in parallel. Each reads the restaurant's real data and proposes changes: reorder stock, fill a shift, run a promotion.
+Nothing takes effect until a person approves it, every change is recorded with who made it and why, and anything can
+be undone.
 
-| Watching an agent delegate, live | Menu costed from recipes |
-|---|---|
-| ![Runs](docs/screenshots/runs.png) | ![Menu](docs/screenshots/menu.png) |
+![Asking Maestro a question, watching it delegate live, and approving what it found](docs/demo.gif)
+
+## Try it
+
+No API key, GPU or model download needed — the demo runs its agents on a deterministic scripted provider, loads a
+small Italian bistro with six weeks of trading, and resets itself daily.
+
+```bash
+docker compose -f docker-compose.demo.yml up --build     # then open http://localhost:8080
+```
+
+Without Docker: `python dev.py setup` once, then `python dev.py demo`.
+To host it publicly for free, see [Deploying the public demo](DEPLOY.md#public-demo-free).
+
+| Overview | Maestro's run, live | Menu costed from recipes |
+|---|---|---|
+| ![Overview](docs/screenshots/overview.png) | ![Runs](docs/screenshots/runs.png) | ![Menu](docs/screenshots/menu.png) |
+| **Approvals** | **Profit and forecast** | **Inventory and days of cover** |
+| ![Approvals](docs/screenshots/approvals.png) | ![Profit](docs/screenshots/profit.png) | ![Inventory](docs/screenshots/inventory.png) |
 
 ---
 
@@ -107,7 +125,10 @@ history, and reports its confidence. "Days of cover" is blank, not zero, where n
 
 **Timezones were a real bug.** The profit chart's daily series once summed to less than the headline revenue: days were
 bucketed by local date while timestamps were stored in UTC. Everything is UTC now, and Postgres sessions are pinned to
-`GMT` — which, unlike `UTC`, every Postgres build has without a timezone database.
+`GMT` — which, unlike `UTC`, every Postgres build has without a timezone database. A second one surfaced while recording
+the demo: SQLite returns timestamps without an offset, so the API sent them without one and a browser west of UTC showed
+a run from a minute ago as "in 7 hours". A column type now attaches UTC on the way out of either database.
+([types.py](backend/app/db/types.py))
 
 ## Agent evaluation
 
@@ -136,52 +157,42 @@ Full report: [evals/results/latest.md](backend/evals/results/latest.md).
 **Frontend** — React 19, TypeScript, Vite, hand-built SVG charts, no UI framework
 **Data** — SQLite locally, Postgres supported and tested
 **Models** — Anthropic Claude, or local models through Ollama
-**Quality** — pytest (200 tests on SQLite and Postgres), Playwright end-to-end tests, agent evals, GitHub Actions
-**Delivery** — Docker Compose with nginx
+**Quality** — pytest (210 tests on SQLite and Postgres), Playwright end-to-end tests, agent evals, GitHub Actions
+**Delivery** — a single-container demo image, and Docker Compose with nginx and Ollama
 
 ## Running it
 
-### With Docker
+Every task is one command through [`dev.py`](dev.py), which works the same on Windows, macOS and Linux:
 
-```bash
-cp .env.docker.example .env
-docker compose up -d --build
-```
+| Command | What it does |
+|---|---|
+| `python dev.py setup` | Creates the virtualenv, installs both halves, migrates and seeds a database |
+| `python dev.py dev` | API on :8000 and frontend on :5173, together |
+| `python dev.py demo` | The public demo on :8080 |
+| `python dev.py test` | Backend tests, then a frontend type-check and build |
+| `python dev.py e2e` | Playwright end-to-end tests against an isolated stack |
+| `python dev.py eval --targets ollama:qwen3.5:4b scripted` | Agent evaluation |
 
-Open http://localhost:8080. The first start downloads the model. See [DEPLOY.md](DEPLOY.md) for free cloud hosting.
-
-### For development
-
-```bash
-# backend
-cd backend
-python -m venv .venv && .venv/Scripts/activate     # source .venv/bin/activate on macOS/Linux
-pip install -r requirements-dev.txt
-cp .env.example .env                               # set LLM_PROVIDER and a model
-alembic upgrade head && python scripts/seed_data.py
-uvicorn app.main:app --port 8000
-
-# frontend, in another terminal
-cd frontend
-npm install
-npm run dev                                        # http://localhost:5173
-```
-
-`LLM_PROVIDER` is `ollama` (needs [Ollama](https://ollama.com) and a tool-capable model), `anthropic` (needs
-`ANTHROPIC_API_KEY`), or `scripted` — a deterministic, model-free provider for trying the app without either.
+`LLM_PROVIDER` in `backend/.env` picks what runs the agents: `ollama` (needs [Ollama](https://ollama.com) and a
+tool-capable model), `anthropic` (needs `ANTHROPIC_API_KEY`), or `scripted`, which `setup` chooses so the app works
+straight away.
 
 For Ollama, start the server with `OLLAMA_NUM_PARALLEL=4` so Maestro's parallel delegations aren't queued one at a
 time, and don't share that server with other heavy workloads — a competing request for the same model with different
 settings makes Ollama reload it.
 
-### Tests
+### With Docker and a local model
 
 ```bash
-cd backend && python -m pytest                                  # unit and integration tests, SQLite
-TEST_DATABASE_URL=postgresql://... python -m pytest             # the same suite against Postgres
-python -m evals.run --targets ollama:qwen3.5:4b scripted        # agent evaluation
-cd frontend && npx playwright test                              # end-to-end, starts its own isolated stack
+cp .env.docker.example .env
+docker compose up -d --build        # nginx, the API and Ollama; the first start downloads the model
 ```
+
+Open http://localhost:8080. [DEPLOY.md](DEPLOY.md) covers hosting it on a free VM.
+
+### Postgres
+
+The suite runs against Postgres in CI. Locally: `TEST_DATABASE_URL=postgresql://... python -m pytest` from `backend/`.
 
 ## Project layout
 
@@ -190,13 +201,18 @@ backend/
   app/agents/       runner, executor, broker, scheduler, appliers, providers, tools
   app/audit/        change-log listener, actor context, revert
   app/restaurant/   domain models, aggregates (profit, forecast, supply chain), routes
+  app/demo.py       the demo restaurant and its reset
   evals/            scenarios, harness, results
   tests/
 frontend/
   src/pages/        one component per page
   src/components/   shared UI: approvals list, charts, drawer, recipe editor
   e2e/              Playwright tests
-docker-compose.yml, DEPLOY.md
+  scripts/          records the demo GIF and screenshots
+docs/               development log, original plan, screenshots
+Dockerfile          single-container image (demo, free hosts)
+docker-compose.yml  nginx + API + Ollama
+dev.py              developer tasks
 ```
 
 ## Limitations
@@ -207,3 +223,7 @@ docker-compose.yml, DEPLOY.md
   moving them to something like Redis.
 - **Gross, not net.** Profit excludes labour and overheads.
 - **No purchase-order lifecycle.** Approving a reorder books the goods as received immediately.
+
+## License
+
+[MIT](LICENSE). How it was built, phase by phase: [docs/devlog.md](docs/devlog.md).

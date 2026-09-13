@@ -1,6 +1,39 @@
 # Running and deploying FullHouse
 
-## Local, with Docker
+## Public demo (free)
+
+The single-container image in the repo root is built for this: the frontend and API in one process, agents on the
+scripted provider (no model, no API key), and a demo restaurant reloaded at every start and daily at 04:00 UTC. It
+used about 100 MB of memory when measured locally, so a 512 MB free tier is plenty.
+
+### Render
+
+1. Sign in at [render.com](https://render.com) with GitHub and give it access to this repository.
+2. **New → Blueprint**, pick the repository. Render reads [`render.yaml`](render.yaml) and proposes one free web
+   service, `fullhouse-demo`. Apply.
+3. The first build takes a few minutes. The site is then at `https://fullhouse-demo.onrender.com` (or a suffixed
+   variant if the name is taken). Put that link at the top of the README.
+
+Pushes to `main` redeploy automatically. The free plan sleeps after 15 idle minutes and takes about a minute to
+wake; each wake starts from a fresh demo, which is what a public demo wants anyway.
+
+### Anywhere else that runs a container
+
+```bash
+docker build -t fullhouse .
+docker run -p 8080:8000 fullhouse                  # the host may assign the port via $PORT instead
+```
+
+Fly.io, Koyeb and Google Cloud Run all run this image unchanged. Set `DEMO_MODE=false` and a different
+`LLM_PROVIDER` to run it as a real instance instead of a demo.
+
+**On an open demo, anyone can change anything** — that's the point, and the scheduled reset is what makes it safe.
+Don't point a demo at data you care about.
+
+---
+
+
+## Local, with Docker and a local model
 
 Needs [Docker Desktop](https://www.docker.com/products/docker-desktop/).
 
@@ -71,7 +104,6 @@ One free ARM VM runs the entire compose stack, model included.
    ```bash
    git clone https://<token>@github.com/eddierzhang/FullHouse-Updated.git
    cd FullHouse-Updated
-   git checkout change-tracking-and-agent-pages   # until it is merged to main
    ```
 5. **Configure and start.**
    ```bash
@@ -105,5 +137,5 @@ Useful for showing the UI, but agent runs won't work for free:
 - **No model:** there is no free host for Ollama at this size. Agents would need
   `LLM_PROVIDER=anthropic` and a paid API key.
 - **Database:** Render's free disk is wiped on every deploy, so SQLite won't persist, and
-  Render's free Postgres is deleted after 30 days. Neon's free tier (0.5 GB) is permanent,
-  but moving to Postgres hasn't been done or tested yet.
+  Render's free Postgres is deleted after 30 days. Neon's free tier (0.5 GB) is permanent, and
+  Postgres is supported: point `DATABASE_URL` at it (CI runs the whole suite on Postgres 16).
