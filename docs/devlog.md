@@ -1,4 +1,8 @@
-# Progress
+# Development log
+
+How FullHouse was built, phase by phase, with the decisions and dead ends along the way. The
+original plan is in [design/original-plan.txt](design/original-plan.txt); the release summary is in
+[CHANGELOG.md](../CHANGELOG.md).
 
 ## Phase 0 — Scaffolding (done)
 
@@ -33,7 +37,7 @@ Built before Phase 0 was fully wired up (Alembic/frontend came after, retroactiv
 - Verified end-to-end including the failure path (no `ANTHROPIC_API_KEY` in this sandbox
   correctly produces a `failed` run with a persisted error, not a crash).
 
-**Known simplifications vs. the full plan** (`PLAN.txt`): no WebSocket live streaming yet
+**Known simplifications vs. the full plan** (`docs/design/original-plan.txt`): no WebSocket live streaming yet
 (poll `GET /agents/runs/{id}`), no APScheduler cron wiring, and a pending `AgentAction`
 doesn't literally pause its run — the run finishes normally and the proposal just sits in
 the approvals queue. Frontend has no agent-specific pages yet (Agents list, run detail,
