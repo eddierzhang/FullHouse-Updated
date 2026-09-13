@@ -41,6 +41,8 @@ def runtime():
         "scheduler_running": scheduler.is_running(),
         "max_concurrent_runs": executor.MAX_CONCURRENT_RUNS,
         "configured_provider": settings.llm_provider,
+        "demo_mode": settings.demo_mode,
+        "demo_resets_at": scheduler.next_fire_time(settings.demo_reset_cron) if settings.demo_mode else None,
     }
 
 

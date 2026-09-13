@@ -1,11 +1,12 @@
 import asyncio
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-
-from datetime import datetime, timezone
+from fastapi.staticfiles import StaticFiles
 
 from app.agents import executor, scheduler
 from app.agents.broker import broker
@@ -57,9 +58,15 @@ def _recover_orphaned_runs(db=None) -> int:
 async def lifespan(app: FastAPI):
     # Worker threads publish run events back onto this loop.
     broker.bind_loop(asyncio.get_running_loop())
-    recovered = _recover_orphaned_runs()
-    if recovered:
-        logger.warning("marked %d interrupted run(s) as failed at startup", recovered)
+    if settings.demo_mode:
+        # A fresh demo restaurant on every start; nothing is left to recover.
+        from app.demo import reset_now
+
+        reset_now()
+    else:
+        recovered = _recover_orphaned_runs()
+        if recovered:
+            logger.warning("marked %d interrupted run(s) as failed at startup", recovered)
     if settings.scheduler_enabled:
         scheduler.start()
     yield
@@ -86,3 +93,16 @@ app.include_router(changes_router)
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+def mount_frontend(app: FastAPI, directory: str) -> None:
+    """Serve the built frontend from the same process as the API.
+
+    Used by the single-container image. Mounted after every API route, so
+    those always take precedence over a static path.
+    """
+    app.mount("/", StaticFiles(directory=directory, html=True), name="frontend")
+
+
+if settings.static_dir and Path(settings.static_dir).is_dir():
+    mount_frontend(app, settings.static_dir)

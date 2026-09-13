@@ -42,5 +42,18 @@ class Settings:
     # where a background thread touching the database would be a flake source.
     scheduler_enabled: bool = os.getenv("SCHEDULER_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 
+    # Pause between the scripted provider's steps, so a demo run streams
+    # visibly instead of finishing before the page can show it.
+    scripted_step_delay_seconds: float = float(os.getenv("SCRIPTED_STEP_DELAY_SECONDS", "0"))
+
+    # Public demo: replace the data with the demo restaurant at startup and
+    # again on this schedule (UTC), so visitors' changes never accumulate.
+    demo_mode: bool = os.getenv("DEMO_MODE", "false").strip().lower() in ("1", "true", "yes")
+    demo_reset_cron: str = os.getenv("DEMO_RESET_CRON", "0 4 * * *")
+
+    # The built frontend, when one process serves both it and the API (the
+    # single-container image). Unset in development, where Vite serves it.
+    static_dir: str | None = os.getenv("STATIC_DIR") or None
+
 
 settings = Settings()

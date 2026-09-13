@@ -1,38 +1,13 @@
-"""The Boss's subagents run side by side, each in its own session."""
+"""Maestro's subagents run side by side, each in its own session."""
 
 import threading
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from app.agents import crud, executor
 from app.agents.models import AgentDefinition, AgentRun
-from app.agents.providers.base import LLMProvider, ProviderResult, RunCancelledError
-from app.agents.providers.ollama_provider import OllamaProvider
+from app.agents.providers.base import LLMProvider, ProviderResult, RunCancelledError, run_tool_calls
 from app.agents.runner import execute_run
-from app.db.session import DATABASE_URL, Base
-
-USING_POSTGRES = DATABASE_URL.startswith("postgresql")
-
-
-@pytest.fixture
-def threaded_db(engine, tmp_path):
-    """A session on an engine that real concurrent connections can share.
-
-    The default test engine is one in-memory SQLite connection, which two
-    threads must never use at once.
-    """
-    if USING_POSTGRES:
-        eng = engine
-    else:
-        eng = create_engine(f"sqlite:///{tmp_path / 'parallel.db'}", connect_args={"check_same_thread": False})
-        Base.metadata.create_all(eng)
-    session = sessionmaker(bind=eng, autoflush=False, autocommit=False)()
-    yield session
-    session.close()
-    if not USING_POSTGRES:
-        eng.dispose()
 
 
 @pytest.fixture
@@ -70,7 +45,7 @@ class FakeProvider(LLMProvider):
                 ("delegate_to_profit", {"task": "check margin"}),
             ]
             results = [
-                result for _, result in OllamaProvider(max_parallel_tools=4)._run_tools(requested, tools_by_name, emit)
+                result for _, result in run_tool_calls(requested, tools_by_name, emit, max_parallel=4)
             ]
             return ProviderResult(text=" | ".join(results))
 

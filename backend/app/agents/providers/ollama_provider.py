@@ -11,11 +11,9 @@ the tools and just talks, which surfaces as a run that reports instead
 of acting.
 """
 
-import contextvars
 import json
 import threading
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -27,6 +25,7 @@ from app.agents.providers.base import (
     ProviderError,
     ProviderResult,
     RunCancelledError,
+    run_tool_calls,
     to_function_schema,
 )
 from app.config import settings
@@ -48,15 +47,6 @@ def _shared_client() -> httpx.Client:
         if _client is None or _client.is_closed:
             _client = httpx.Client()
         return _client
-
-
-def is_parallel_safe(tool: Any) -> bool:
-    """Tools opt in by setting `parallel_safe = True`.
-
-    Most tools write through the run's own database session, which must not
-    be shared across threads, so concurrency is never the default.
-    """
-    return bool(getattr(tool, "parallel_safe", False))
 
 
 class OllamaProvider(LLMProvider):
@@ -129,49 +119,6 @@ class OllamaProvider(LLMProvider):
                 return {}
         return dict(raw or {})
 
-    @staticmethod
-    def _call_tool(name: str, arguments: dict, tools_by_name: dict) -> str:
-        tool = tools_by_name.get(name)
-        if tool is None:
-            return f"Error: no tool named {name!r}. Available: {', '.join(sorted(tools_by_name))}"
-        try:
-            return str(tool.call(arguments))
-        except Exception as exc:  # surfaced to the model, not raised
-            return f"Error running {name}: {exc}"
-
-    def _run_tools(self, requested: list[tuple[str, dict]], tools_by_name: dict, emit: EventEmitter):
-        """Yield (name, result) for each requested call, in request order.
-
-        When the model asks for several parallel-safe tools in one turn --
-        a Boss delegating to three specialists -- they run concurrently, so
-        the turn takes as long as the slowest rather than the sum. Anything
-        else runs one at a time. Events are only ever emitted from this
-        thread, since `emit` writes through the run's session.
-        """
-        concurrent = (
-            len(requested) > 1
-            and self.max_parallel_tools > 1
-            and all(is_parallel_safe(tools_by_name.get(name)) for name, _ in requested)
-        )
-        if not concurrent:
-            for name, arguments in requested:
-                emit("tool_call", {"tool": name, "input": arguments})
-                yield name, self._call_tool(name, arguments, tools_by_name)
-            return
-
-        for name, arguments in requested:
-            emit("tool_call", {"tool": name, "input": arguments})
-        workers = min(self.max_parallel_tools, len(requested))
-        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="agent-tool") as pool:
-            # Each call gets its own copy of the caller's context, so actor
-            # attribution follows the work into the worker thread.
-            futures = [
-                pool.submit(contextvars.copy_context().run, self._call_tool, name, arguments, tools_by_name)
-                for name, arguments in requested
-            ]
-            results = [future.result() for future in futures]
-        yield from zip((name for name, _ in requested), results)
-
     def run_agent_loop(
         self,
         *,
@@ -213,7 +160,7 @@ class OllamaProvider(LLMProvider):
                 name = function.get("name") or ""
                 requested.append((name, self._arguments(function.get("arguments"))))
 
-            for name, result in self._run_tools(requested, tools_by_name, emit):
+            for name, result in run_tool_calls(requested, tools_by_name, emit, self.max_parallel_tools):
                 result = result[:MAX_TOOL_RESULT_CHARS]
                 emit("tool_result", {"tool": name, "result": result})
                 messages.append({"role": "tool", "tool_name": name, "content": result})

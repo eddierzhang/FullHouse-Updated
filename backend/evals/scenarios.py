@@ -41,7 +41,7 @@ class Scenario:
 
 def build_world(db: Session) -> dict:
     """The shared baseline: healthy stock, a sold menu, a staffed schedule."""
-    from scripts.seed_data import BOSS_DEF, SUBAGENT_DEFS
+    from app.agents.definitions import BOSS_DEF, SUBAGENT_DEFS
 
     for d in SUBAGENT_DEFS:
         db.add(AgentDefinition(role="subagent", enabled=True, **d))

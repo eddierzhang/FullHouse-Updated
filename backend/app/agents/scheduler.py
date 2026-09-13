@@ -17,10 +17,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
 from app.audit.context import SYSTEM_ACTOR, actor_context, note_context
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
 PROMOTION_SWEEP_JOB = "expire-promotions"
+DEMO_RESET_JOB = "demo-reset"
 _scheduler: BackgroundScheduler | None = None
 
 
@@ -172,6 +174,13 @@ def sync_agent_schedules() -> None:
         )
 
 
+def _reset_demo() -> None:
+    from app.demo import reset_now
+
+    reset_now()
+    sync_agent_schedules()  # the reset replaced the agent definitions
+
+
 def start() -> None:
     global _scheduler
     if _scheduler is not None:
@@ -181,6 +190,11 @@ def start() -> None:
         expire_promotions, "interval", minutes=1, id=PROMOTION_SWEEP_JOB,
         coalesce=True, max_instances=1,
     )
+    if settings.demo_mode:
+        _scheduler.add_job(
+            _reset_demo, parse_cron(settings.demo_reset_cron), id=DEMO_RESET_JOB,
+            coalesce=True, max_instances=1,
+        )
     _scheduler.start()
     sync_agent_schedules()
 

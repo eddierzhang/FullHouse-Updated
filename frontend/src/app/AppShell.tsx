@@ -17,6 +17,7 @@ import { ActionDrawer } from '../components/ActionDrawer'
 import { Icon, type IconName } from '../components/Icon'
 import { NewTaskModal } from '../components/NewTaskModal'
 import { Toast, type ToastState } from '../components/Toast'
+import { relativeTime } from '../lib/format'
 import { type Route, useHashRoute } from '../lib/useHashRoute'
 import { AgentsPage } from '../pages/AgentsPage'
 import { ApprovalsPage } from '../pages/ApprovalsPage'
@@ -95,7 +96,7 @@ export function AppShell() {
     window.setTimeout(() => setToastState(null), 3200)
   }, [])
 
-  // Boss first, then everyone else alphabetically -- the order they appear everywhere.
+  // Maestro first, then everyone else alphabetically -- the order they appear everywhere.
   const sortedAgents = useMemo(
     () => [...agents].sort((a, b) => (a.role === b.role ? a.name.localeCompare(b.name) : a.role === 'boss' ? -1 : 1)),
     [agents],
@@ -228,6 +229,18 @@ export function AppShell() {
           <button className="btn btn-ghost btn-icon menu-button" aria-label="Open navigation" onClick={() => setSidebarOpen(true)}>
             <Icon name="hamburger" />
           </button>
+          {runtime?.demo_mode && (
+            <div className="demo-banner" role="note">
+              <span className="demo-pill">Live demo</span>
+              <span className="hide-mobile">
+                Change anything — it all resets{runtime.demo_resets_at ? ` ${relativeTime(runtime.demo_resets_at)}` : ' daily'}. Try{' '}
+                <button className="link-button" onClick={() => app.newTask('boss')}>
+                  a task for Maestro
+                </button>
+                .
+              </span>
+            </div>
+          )}
           <div className="topbar-spacer" />
           {pendingActions.length > 0 && route !== 'approvals' && (
             <a className="btn btn-secondary hide-mobile" href="#approvals">

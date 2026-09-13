@@ -97,3 +97,22 @@ def changes(db):
         return query.order_by(ChangeLog.id).all()
 
     return _changes
+
+
+@pytest.fixture
+def threaded_db(engine, tmp_path):
+    """A session on an engine that real concurrent connections can share.
+
+    The default test engine is one in-memory SQLite connection, which two
+    threads must never use at once.
+    """
+    if USING_POSTGRES:
+        eng = engine
+    else:
+        eng = create_engine(f"sqlite:///{tmp_path / 'parallel.db'}", connect_args={"check_same_thread": False})
+        Base.metadata.create_all(eng)
+    session = sessionmaker(bind=eng, autoflush=False, autocommit=False)()
+    yield session
+    session.close()
+    if not USING_POSTGRES:
+        eng.dispose()

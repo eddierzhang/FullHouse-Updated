@@ -45,6 +45,9 @@ export type Runtime = {
   model: string
   scheduler_running: boolean
   max_concurrent_runs: number
+  /** A public demo: the data is replaced on a schedule. */
+  demo_mode?: boolean
+  demo_resets_at?: string | null
 }
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled'
