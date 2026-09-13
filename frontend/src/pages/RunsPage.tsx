@@ -176,14 +176,16 @@ export function RunsPage({ app }: { app: AppContext }) {
             )}
           </div>
 
-          <div className="log" ref={logRef}>
+          <div className="run-log" ref={logRef} data-testid="run-log">
             {!selectedId && <div className="empty">Select a run.</div>}
             {selectedId && events.length === 0 && (
               <div className="empty">{streaming ? 'Waiting for the first event…' : 'No events recorded.'}</div>
             )}
             {events.map((event, index) => (
-              <div className="log-line" key={`${event.seq ?? 'x'}-${index}`}>
-                <span className={`log-type ${event.type}`}>{event.type.replace('_', ' ')}</span>
+              <div className="run-log-line" key={`${event.seq ?? 'x'}-${index}`}>
+                <span className="run-log-type" data-type={event.type}>
+                  {event.type.replace('_', ' ')}
+                </span>
                 <span>{describe(event)}</span>
               </div>
             ))}
