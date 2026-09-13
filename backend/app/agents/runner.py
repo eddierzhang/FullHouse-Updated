@@ -18,10 +18,10 @@ def _now() -> datetime:
 def execute_run(run_id: str, db: Session | None = None) -> str:
     """Drive one agent run to completion via the configured LLM provider.
 
-    Pass `db` when calling from within another run's own tool execution
-    (delegation) so parent and child share one session/transaction; leave
-    it unset for a top-level run triggered from the API, which opens and
-    owns its own session."""
+    Pass `db` to run against a session the caller owns (delegation, tests,
+    evals); leave it unset for a top-level run triggered from the API,
+    which opens and owns its own session. A session must not be shared
+    with a run executing on another thread."""
     owns_session = db is None
     if db is None:
         db = SessionLocal()
@@ -60,13 +60,16 @@ def execute_run(run_id: str, db: Session | None = None) -> str:
 
             from app.agents import executor
 
+            # Cancelling a Boss also stops the subagents it is waiting on.
+            watched = [run.id] + ([run.parent_run_id] if run.parent_run_id else [])
+
             result = provider.run_agent_loop(
                 model=model,
                 system=defn.system_prompt,
                 tools=tools,
                 user_message=run.input or "Run now.",
                 emit=emit,
-                should_cancel=lambda: executor.is_cancelled(run.id),
+                should_cancel=lambda: any(executor.is_cancelled(run_id) for run_id in watched),
             )
 
             output_summary = result.text

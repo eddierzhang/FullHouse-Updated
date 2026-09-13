@@ -135,6 +135,106 @@ def test_tools_are_declared_to_the_model(ollama, tools):
     }
 
 
+def test_context_size_and_keep_alive_are_pinned_on_every_request(ollama, tools):
+    """Leaving either to Ollama's defaults makes it reload the model between calls."""
+    tool_list, _ = tools
+    ollama["scripted"] = [
+        {
+            "message": {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "list_low_stock_items", "arguments": {}}}],
+            }
+        },
+        {"message": {"role": "assistant", "content": "done"}},
+    ]
+    _, emit = _events()
+
+    _provider(ollama, num_ctx=4096, keep_alive="1h").run_agent_loop(
+        model="test-model", system="s", tools=tool_list, user_message="go", emit=emit
+    )
+
+    assert len(ollama["requests"]) == 2
+    for request in ollama["requests"]:
+        assert request["options"] == {"num_ctx": 4096}
+        assert request["keep_alive"] == "1h"
+
+
+def _two_calls_to(name_a, name_b):
+    return {
+        "message": {
+            "role": "assistant",
+            "tool_calls": [
+                {"function": {"name": name_a, "arguments": {"task": "a"}}},
+                {"function": {"name": name_b, "arguments": {"task": "b"}}},
+            ],
+        }
+    }
+
+
+def test_parallel_safe_tools_from_one_turn_run_concurrently(ollama):
+    # Each tool waits for the other to start; run one at a time, they would
+    # time out instead.
+    both_started = threading.Barrier(2, timeout=5)
+
+    def make(name):
+        @beta_tool(name=name, description="Slow delegation.")
+        def slow(task: str) -> str:
+            """
+            Args:
+                task: What to do.
+            """
+            both_started.wait()
+            return f"{name} finished {task}"
+
+        slow.parallel_safe = True
+        return slow
+
+    ollama["scripted"] = [_two_calls_to("first", "second"), {"message": {"role": "assistant", "content": "ok"}}]
+    seen, emit = _events()
+
+    _provider(ollama).run_agent_loop(
+        model="test-model", system="s", tools=[make("first"), make("second")], user_message="go", emit=emit
+    )
+
+    tool_messages = [m for m in ollama["requests"][1]["messages"] if m["role"] == "tool"]
+    # Results go back in the order the model asked, whatever order they finished in.
+    assert [m["content"] for m in tool_messages] == ["first finished a", "second finished b"]
+    assert [e for e, _ in seen] == ["tool_call", "tool_call", "tool_result", "tool_result", "log"]
+
+
+def test_ordinary_tools_still_run_one_at_a_time(ollama):
+    running = threading.Lock()
+    overlapped = []
+
+    def make(name):
+        @beta_tool(name=name, description="Writes through the run's session.")
+        def write(task: str) -> str:
+            """
+            Args:
+                task: What to do.
+            """
+            if not running.acquire(blocking=False):
+                overlapped.append(name)
+                return "overlap"
+            try:
+                threading.Event().wait(0.05)
+                return "ok"
+            finally:
+                running.release()
+
+        return write
+
+    ollama["scripted"] = [_two_calls_to("first", "second"), {"message": {"role": "assistant", "content": "ok"}}]
+    seen, emit = _events()
+
+    _provider(ollama).run_agent_loop(
+        model="test-model", system="s", tools=[make("first"), make("second")], user_message="go", emit=emit
+    )
+
+    assert overlapped == []
+    assert [e for e, _ in seen][:4] == ["tool_call", "tool_result", "tool_call", "tool_result"]
+
+
 def test_tool_call_is_executed_and_fed_back(ollama, tools):
     tool_list, calls = tools
     ollama["scripted"] = [

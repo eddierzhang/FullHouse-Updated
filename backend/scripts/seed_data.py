@@ -95,8 +95,8 @@ BOSS_DEF = dict(
         "not have direct tools of your own - your only tools are delegate_to_inventory, "
         "delegate_to_supply_chain, delegate_to_employee_management, delegate_to_profit, "
         "and delegate_to_marketing. Given the operator's objective, decide which "
-        "subagent(s) are relevant, delegate a clear task to each (you may call more than "
-        "one), and then write a short synthesized summary of what they found. Do not "
+        "subagent(s) are relevant, delegate a clear task to each (when several are relevant, "
+        "call their delegate tools together in one turn so they run in parallel), and then write a short synthesized summary of what they found. Do not "
         "delegate to every subagent for every request - only the ones relevant to the "
         "objective."
     ),

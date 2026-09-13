@@ -91,6 +91,17 @@ sees the whole run. ([broker.py](backend/app/agents/broker.py))
 **Cancellation is cooperative.** Providers check between tool rounds rather than killing a thread mid-write, and runs
 orphaned by a server restart are marked failed on startup instead of claiming to be in progress forever.
 
+**The Boss's subagents run in parallel.** When the Boss delegates to several specialists in one turn, they run
+concurrently, so the turn takes as long as the slowest one rather than the sum. Only tools that opt in with
+`parallel_safe` ever run concurrently: a SQLAlchemy session is not thread-safe, so each delegation opens its own, and a
+lock serialises the sequence numbers of the events the Boss's run gets from several threads at once. A three-agent
+review that files proposals takes about 74s against 134s of subagent time.
+([orchestrator.py](backend/app/agents/orchestrator.py))
+
+**Slow local runs were model reloads, not inference.** Profiling showed ~140 tokens/s and sub-second calls, but 10–16s
+of load time on nearly every call: Ollama reloads a model whenever a request asks for a different context size than
+the loaded copy, and unloads it after five idle minutes. Every request now pins `num_ctx` and `keep_alive`.
+
 **Numbers say what they rest on.** The forecast switches from a daily average to weekday means only with two weeks of
 history, and reports its confidence. "Days of cover" is blank, not zero, where no recipe links an item to sales.
 
@@ -125,7 +136,7 @@ Full report: [evals/results/latest.md](backend/evals/results/latest.md).
 **Frontend** — React 19, TypeScript, Vite, hand-built SVG charts, no UI framework
 **Data** — SQLite locally, Postgres supported and tested
 **Models** — Anthropic Claude, or local models through Ollama
-**Quality** — pytest (195 tests on SQLite and Postgres), Playwright end-to-end tests, agent evals, GitHub Actions
+**Quality** — pytest (200 tests on SQLite and Postgres), Playwright end-to-end tests, agent evals, GitHub Actions
 **Delivery** — Docker Compose with nginx
 
 ## Running it
@@ -158,6 +169,10 @@ npm run dev                                        # http://localhost:5173
 
 `LLM_PROVIDER` is `ollama` (needs [Ollama](https://ollama.com) and a tool-capable model), `anthropic` (needs
 `ANTHROPIC_API_KEY`), or `scripted` — a deterministic, model-free provider for trying the app without either.
+
+For Ollama, start the server with `OLLAMA_NUM_PARALLEL=4` so the Boss's parallel delegations aren't queued one at a
+time, and don't share that server with other heavy workloads — a competing request for the same model with different
+settings makes Ollama reload it.
 
 ### Tests
 

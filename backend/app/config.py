@@ -23,9 +23,20 @@ class Settings:
     ollama_model: str = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
     ollama_timeout_seconds: float = float(os.getenv("OLLAMA_TIMEOUT_SECONDS", "300"))
 
+    # Sent on every request. Ollama reloads a model whenever a request asks
+    # for a different context size than the loaded copy has, and unloads it
+    # after five idle minutes by default -- either one turns a sub-second
+    # call into a multi-second GPU load. Pinning both keeps it warm.
+    ollama_num_ctx: int = int(os.getenv("OLLAMA_NUM_CTX", "8192"))
+    ollama_keep_alive: str = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
+
     # Cap on tool round-trips in one run, so a model that loops on the
     # same call fails loudly instead of running forever.
     agent_max_tool_rounds: int = int(os.getenv("AGENT_MAX_TOOL_ROUNDS", "12"))
+
+    # How many tool calls from one model turn may run at once. Only tools
+    # marked parallel-safe (the Boss's delegations) ever run concurrently.
+    agent_max_parallel_tools: int = int(os.getenv("AGENT_MAX_PARALLEL_TOOLS", "4"))
 
     # Cron-scheduled agents and the promotion-expiry sweep. Off in tests,
     # where a background thread touching the database would be a flake source.

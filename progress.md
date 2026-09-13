@@ -366,3 +366,23 @@ intended dependency ordering. The images themselves have not been built.
 - **Frontend redesign**: one design system, grouped navigation where every item is a page, real figures
   in place of hard-coded dashboard numbers, and pages for agent schedules and inventory.
 - **README** with architecture, engineering notes and eval results.
+
+## Phase 12 — Agent speed (done)
+
+Profiling showed generation was fast (~140 tok/s, sub-second warm calls); runs were slow because
+Ollama reloaded the model on nearly every call. Another project sharing the same server loaded the
+model with a 32K context, and FullHouse's requests (no context size) forced a reload back, 10–16s
+each time.
+
+- **Pinned `num_ctx` and `keep_alive`** on every request (`OLLAMA_NUM_CTX`, `OLLAMA_KEEP_ALIVE`), so a
+  loaded model is reused and never idles out mid-run. One shared `httpx.Client` for the process.
+- **Dedicated Ollama** for development on port 11435 (`OLLAMA_NUM_PARALLEL=4`,
+  `OLLAMA_MAX_LOADED_MODELS=1`); compose sets the same on its `ollama` service.
+- **Parallel delegation**: when the Boss asks for several subagents in one turn they run concurrently
+  (`AGENT_MAX_PARALLEL_TOOLS`). Only tools marked `parallel_safe` are ever run concurrently; each
+  delegation opens its own session, sequence numbers on the Boss's events are serialised by a lock,
+  and cancelling the Boss stops its children.
+
+Measured on qwen2.5:7b: a Boss run on the shared server timed out after 300s; on the dedicated one a
+two-agent review finished in 19.9s, and a three-agent review that also filed proposals in 73.6s
+against ~134s of subagent time.

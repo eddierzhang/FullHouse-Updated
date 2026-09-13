@@ -11,8 +11,11 @@ the tools and just talks, which surfaces as a run that reports instead
 of acting.
 """
 
+import contextvars
 import json
+import threading
 from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import httpx
@@ -32,6 +35,29 @@ from app.config import settings
 #: whole inventory dump) can blow the context window on a small model.
 MAX_TOOL_RESULT_CHARS = 8000
 
+# One connection pool for the process. A provider is built per run, and a
+# Boss run fans out into several at once, so a client per call would pay a
+# fresh TCP connection on every model turn. httpx.Client is thread-safe.
+_client: httpx.Client | None = None
+_client_lock = threading.Lock()
+
+
+def _shared_client() -> httpx.Client:
+    global _client
+    with _client_lock:
+        if _client is None or _client.is_closed:
+            _client = httpx.Client()
+        return _client
+
+
+def is_parallel_safe(tool: Any) -> bool:
+    """Tools opt in by setting `parallel_safe = True`.
+
+    Most tools write through the run's own database session, which must not
+    be shared across threads, so concurrency is never the default.
+    """
+    return bool(getattr(tool, "parallel_safe", False))
+
 
 class OllamaProvider(LLMProvider):
     key = "ollama"
@@ -42,11 +68,17 @@ class OllamaProvider(LLMProvider):
         model: str | None = None,
         timeout: float | None = None,
         max_rounds: int | None = None,
+        num_ctx: int | None = None,
+        keep_alive: str | None = None,
+        max_parallel_tools: int | None = None,
     ):
         self.base_url = (base_url or settings.ollama_base_url).rstrip("/")
         self.model = model or settings.ollama_model
         self.timeout = timeout if timeout is not None else settings.ollama_timeout_seconds
         self.max_rounds = max_rounds or settings.agent_max_tool_rounds
+        self.num_ctx = num_ctx or settings.ollama_num_ctx
+        self.keep_alive = keep_alive or settings.ollama_keep_alive
+        self.max_parallel_tools = max(1, max_parallel_tools or settings.agent_max_parallel_tools)
 
     def resolve_model(self, configured_model: str) -> str:
         """Always the configured Ollama model.
@@ -58,9 +90,16 @@ class OllamaProvider(LLMProvider):
         return self.model
 
     def _chat(self, model: str, messages: list[dict], tools: list[dict]) -> dict:
-        payload = {"model": model, "messages": messages, "tools": tools, "stream": False}
+        payload = {
+            "model": model,
+            "messages": messages,
+            "tools": tools,
+            "stream": False,
+            "keep_alive": self.keep_alive,
+            "options": {"num_ctx": self.num_ctx},
+        }
         try:
-            response = httpx.post(
+            response = _shared_client().post(
                 f"{self.base_url}/api/chat", json=payload, timeout=self.timeout
             )
         except httpx.RequestError as exc:
@@ -89,6 +128,49 @@ class OllamaProvider(LLMProvider):
             except json.JSONDecodeError:
                 return {}
         return dict(raw or {})
+
+    @staticmethod
+    def _call_tool(name: str, arguments: dict, tools_by_name: dict) -> str:
+        tool = tools_by_name.get(name)
+        if tool is None:
+            return f"Error: no tool named {name!r}. Available: {', '.join(sorted(tools_by_name))}"
+        try:
+            return str(tool.call(arguments))
+        except Exception as exc:  # surfaced to the model, not raised
+            return f"Error running {name}: {exc}"
+
+    def _run_tools(self, requested: list[tuple[str, dict]], tools_by_name: dict, emit: EventEmitter):
+        """Yield (name, result) for each requested call, in request order.
+
+        When the model asks for several parallel-safe tools in one turn --
+        a Boss delegating to three specialists -- they run concurrently, so
+        the turn takes as long as the slowest rather than the sum. Anything
+        else runs one at a time. Events are only ever emitted from this
+        thread, since `emit` writes through the run's session.
+        """
+        concurrent = (
+            len(requested) > 1
+            and self.max_parallel_tools > 1
+            and all(is_parallel_safe(tools_by_name.get(name)) for name, _ in requested)
+        )
+        if not concurrent:
+            for name, arguments in requested:
+                emit("tool_call", {"tool": name, "input": arguments})
+                yield name, self._call_tool(name, arguments, tools_by_name)
+            return
+
+        for name, arguments in requested:
+            emit("tool_call", {"tool": name, "input": arguments})
+        workers = min(self.max_parallel_tools, len(requested))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="agent-tool") as pool:
+            # Each call gets its own copy of the caller's context, so actor
+            # attribution follows the work into the worker thread.
+            futures = [
+                pool.submit(contextvars.copy_context().run, self._call_tool, name, arguments, tools_by_name)
+                for name, arguments in requested
+            ]
+            results = [future.result() for future in futures]
+        yield from zip((name for name, _ in requested), results)
 
     def run_agent_loop(
         self,
@@ -125,21 +207,13 @@ class OllamaProvider(LLMProvider):
                 return ProviderResult(text=text, tokens_used=tokens or None)
 
             messages.append(message)
+            requested = []
             for call in calls:
                 function = call.get("function") or {}
                 name = function.get("name") or ""
-                arguments = self._arguments(function.get("arguments"))
-                emit("tool_call", {"tool": name, "input": arguments})
+                requested.append((name, self._arguments(function.get("arguments"))))
 
-                tool = tools_by_name.get(name)
-                if tool is None:
-                    result = f"Error: no tool named {name!r}. Available: {', '.join(sorted(tools_by_name))}"
-                else:
-                    try:
-                        result = str(tool.call(arguments))
-                    except Exception as exc:  # surfaced to the model, not raised
-                        result = f"Error running {name}: {exc}"
-
+            for name, result in self._run_tools(requested, tools_by_name, emit):
                 result = result[:MAX_TOOL_RESULT_CHARS]
                 emit("tool_result", {"tool": name, "result": result})
                 messages.append({"role": "tool", "tool_name": name, "content": result})

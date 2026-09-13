@@ -32,6 +32,11 @@ services:
   ollama:
     image: ollama/ollama:latest
     restart: unless-stopped
+    environment:
+      # Room for the Boss's parallel delegations, one model kept warm.
+      OLLAMA_NUM_PARALLEL: 4
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_KEEP_ALIVE: 30m
     volumes:
       # A named volume by default. Set OLLAMA_MODELS_DIR to an existing model
       # folder on this machine to reuse it instead of downloading again.
