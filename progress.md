@@ -349,3 +349,20 @@ Verified without Docker (not installed on the dev machine): the container-mode f
 contains no `localhost:8000`, the backend startup chain migrates and seeds a fresh database and
 passes its healthcheck, a restart does not duplicate data, and the compose file parses with the
 intended dependency ordering. The images themselves have not been built.
+
+## Phase 11 — Evals, scheduling, forecast, Postgres, E2E, CI, redesign (done)
+
+- **Postgres** runs the full suite (196 on Postgres 16). Tests no longer touch the developer's
+  `app.db` — startup recovery used to run against it whenever a test started the app.
+- **Scheduling**: APScheduler drives `schedule_cron`; overlapping fires are skipped; promotions
+  can end on their own and restore the regular price.
+- **Forecast** from completed trading days, reporting method and confidence.
+- **Evals** (`backend/evals/`): six scenarios through the real pipeline, scored on behaviour, with a
+  do-nothing baseline (70%). qwen3.5:4b 97%, qwen2.5:7b 73%.
+- **Scripted provider** for model-free CI and browser tests.
+- **Playwright**: 8 end-to-end tests against an isolated stack.
+- **CI** (GitHub Actions): SQLite and Postgres test jobs, build, E2E, and a Docker build + smoke test
+  that streams a live run through nginx — the first real verification of the containers.
+- **Frontend redesign**: one design system, grouped navigation where every item is a page, real figures
+  in place of hard-coded dashboard numbers, and pages for agent schedules and inventory.
+- **README** with architecture, engineering notes and eval results.
