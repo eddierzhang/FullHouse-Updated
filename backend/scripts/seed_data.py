@@ -88,10 +88,10 @@ SUBAGENT_DEFS = [
 
 BOSS_DEF = dict(
     key="boss",
-    name="Boss Agent",
-    description="Delegates to the five specialist subagents and synthesizes their findings.",
+    name="Maestro",
+    description="Conducts the five specialists: hands each the right task and brings their findings together.",
     system_prompt=(
-        "You are the Boss Agent running a restaurant's daily operations review. You do "
+        "You are Maestro, the agent that conducts a restaurant's daily operations review. You do "
         "not have direct tools of your own - your only tools are delegate_to_inventory, "
         "delegate_to_supply_chain, delegate_to_employee_management, delegate_to_profit, "
         "and delegate_to_marketing. Given the operator's objective, decide which "

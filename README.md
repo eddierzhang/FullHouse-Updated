@@ -2,7 +2,7 @@
 
 **An operations platform for a restaurant, run by a team of AI agents that propose — and a manager who decides.**
 
-A Boss agent delegates to five specialists (inventory, suppliers, staff, menu, profit). Each can read the restaurant's
+Maestro, the lead agent, delegates to five specialists (inventory, suppliers, staff, menu, profit). Each can read the restaurant's
 real data and propose changes: reorder stock, schedule a shift, run a promotion. Nothing takes effect until a person
 approves it, every change is recorded with who made it and why, and anything can be reverted.
 
@@ -24,7 +24,7 @@ approves it, every change is recorded with who made it and why, and anything can
 - **A complete, revertible history.** Every insert, update and delete is captured with before/after values, the person
   or agent responsible, and the agent run behind it. Any change can be undone; the undo is recorded too.
 - **Live agent runs.** Runs execute in the background and stream every tool call and result to the browser as it
-  happens, including the Boss's delegation tree. Runs can be cancelled mid-flight.
+  happens, including Maestro's delegation tree. Runs can be cancelled mid-flight.
 - **Scheduled agents.** Cron schedules per agent, with a guard against overlapping runs. Promotions expire on their own.
 - **Local or hosted models.** Swap between Anthropic's API and a local Ollama model with one setting.
 - **Operations that add up.** Recipes link dishes to ingredients, so selling a dish draws down stock, food cost is
@@ -91,10 +91,10 @@ sees the whole run. ([broker.py](backend/app/agents/broker.py))
 **Cancellation is cooperative.** Providers check between tool rounds rather than killing a thread mid-write, and runs
 orphaned by a server restart are marked failed on startup instead of claiming to be in progress forever.
 
-**The Boss's subagents run in parallel.** When the Boss delegates to several specialists in one turn, they run
+**Maestro's subagents run in parallel.** When Maestro delegates to several specialists in one turn, they run
 concurrently, so the turn takes as long as the slowest one rather than the sum. Only tools that opt in with
 `parallel_safe` ever run concurrently: a SQLAlchemy session is not thread-safe, so each delegation opens its own, and a
-lock serialises the sequence numbers of the events the Boss's run gets from several threads at once. A three-agent
+lock serialises the sequence numbers of the events Maestro's run gets from several threads at once. A three-agent
 review that files proposals takes about 74s against 134s of subagent time.
 ([orchestrator.py](backend/app/agents/orchestrator.py))
 
@@ -170,7 +170,7 @@ npm run dev                                        # http://localhost:5173
 `LLM_PROVIDER` is `ollama` (needs [Ollama](https://ollama.com) and a tool-capable model), `anthropic` (needs
 `ANTHROPIC_API_KEY`), or `scripted` — a deterministic, model-free provider for trying the app without either.
 
-For Ollama, start the server with `OLLAMA_NUM_PARALLEL=4` so the Boss's parallel delegations aren't queued one at a
+For Ollama, start the server with `OLLAMA_NUM_PARALLEL=4` so Maestro's parallel delegations aren't queued one at a
 time, and don't share that server with other heavy workloads — a competing request for the same model with different
 settings makes Ollama reload it.
 
