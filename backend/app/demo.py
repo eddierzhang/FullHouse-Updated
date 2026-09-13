@@ -52,18 +52,18 @@ SUPPLIERS = [
 
 INVENTORY = [
     # name, unit, on hand, reorder at, reorder qty, unit cost, supplier (None = unassigned)
-    ("Flour", "lb", 62, 25, 50, 0.60, "Sysco Foods"),
-    ("Mozzarella", "lb", 16, 12, 30, 4.50, "Harbor Dairy Co."),
-    ("Tomatoes", "lb", 6, 15, 30, 1.80, "Green Valley Farms"),
-    ("Basil", "bunch", 3, 8, 20, 1.25, "Green Valley Farms"),
-    ("Romaine Lettuce", "head", 9, 10, 30, 1.10, "Green Valley Farms"),
-    ("Parmesan", "lb", 7, 4, 10, 9.00, "Harbor Dairy Co."),
-    ("Chicken Breast", "lb", 11, 15, 40, 3.20, "Sysco Foods"),
-    ("Mascarpone", "lb", 5, 3, 8, 6.50, "Harbor Dairy Co."),
-    ("Espresso Beans", "lb", 4, 2, 6, 14.00, "Sysco Foods"),
-    ("Garlic", "lb", 3, 2, 5, 3.00, "Green Valley Farms"),
-    ("Olive Oil", "L", 8, 4, 12, 7.50, "Sysco Foods"),
-    ("Ciabatta", "loaf", 10, 12, 30, 2.20, None),
+    ("Flour", "lb", 62, 25, 50, 0.95, "Sysco Foods"),
+    ("Mozzarella", "lb", 16, 12, 30, 6.80, "Harbor Dairy Co."),
+    ("Tomatoes", "lb", 6, 15, 30, 2.90, "Green Valley Farms"),
+    ("Basil", "bunch", 3, 8, 20, 2.40, "Green Valley Farms"),
+    ("Romaine Lettuce", "head", 9, 10, 30, 2.10, "Green Valley Farms"),
+    ("Parmesan", "lb", 7, 4, 10, 16.00, "Harbor Dairy Co."),
+    ("Chicken Breast", "lb", 11, 15, 40, 5.40, "Sysco Foods"),
+    ("Mascarpone", "lb", 5, 3, 8, 9.50, "Harbor Dairy Co."),
+    ("Espresso Beans", "lb", 4, 2, 6, 18.00, "Sysco Foods"),
+    ("Garlic", "lb", 3, 2, 5, 4.50, "Green Valley Farms"),
+    ("Olive Oil", "L", 8, 4, 12, 12.00, "Sysco Foods"),
+    ("Ciabatta", "loaf", 10, 12, 30, 3.60, None),
 ]
 
 MENU = [
@@ -105,8 +105,14 @@ def _id() -> str:
 
 
 def _insert(db: Session, model, rows: list[dict]) -> None:
-    if rows:
-        db.execute(model.__table__.insert(), rows)
+    """Bulk insert. Every row must name the same columns: an executemany
+    takes its column list from the first row and silently drops the rest."""
+    if not rows:
+        return
+    columns = set(rows[0])
+    if any(set(row) != columns for row in rows):
+        raise ValueError(f"{model.__tablename__} rows name different columns")
+    db.execute(model.__table__.insert(), rows)
 
 
 def wipe(db: Session) -> None:
@@ -128,7 +134,7 @@ def reset_demo_data(db: Session, now: datetime | None = None) -> dict:
     for d in SUBAGENT_DEFS:
         agents[d["key"]] = _id()
         agent_rows.append(dict(id=agents[d["key"]], role="subagent", model="claude-opus-5", enabled=True,
-                               created_at=now, **d))
+                               created_at=now, schedule_cron=None, **d))
     agents[BOSS_DEF["key"]] = _id()
     agent_rows.append(dict(id=agents[BOSS_DEF["key"]], role="boss", model="claude-opus-5", enabled=True,
                            created_at=now, schedule_cron="0 9 * * *", **BOSS_DEF))

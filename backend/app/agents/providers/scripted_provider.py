@@ -9,7 +9,7 @@ A specialist:
 
 1. logs what it is about to do;
 2. calls its first tool that needs no arguments, if it has one;
-3. finishes with a summary that quotes the tool's result.
+3. finishes with a one-line summary of what the tool returned.
 
 Maestro, whose only tools are delegations, instead hands the task to the
 specialists whose domain the task mentions -- all of them if it mentions
@@ -20,6 +20,7 @@ is exercised with seeded proposals instead. Selected with LLM_PROVIDER=scripted.
 """
 
 import inspect
+import json
 import threading
 from collections.abc import Sequence
 from typing import Any
@@ -45,6 +46,32 @@ ROUTING = {
     "profit": ("profit", "margin", "revenue", "sales", "money", "cost", "forecast"),
     "marketing": ("menu", "promotion", "promo", "dish", "marketing", "seller", "price"),
 }
+
+
+def describe(result: str, limit: int = 160) -> str:
+    """A one-line reading of a tool result, in place of raw JSON.
+
+    Tools answer in JSON for the model's benefit; quoted as-is it makes a
+    demo summary look like a stack trace.
+    """
+    try:
+        data = json.loads(result)
+    except (TypeError, ValueError):
+        data = None
+
+    if isinstance(data, list) and data and all(isinstance(row, dict) and "name" in row for row in data):
+        names = [str(row["name"]) for row in data]
+        shown = ", ".join(names[:4]) + (f" and {len(names) - 4} more" if len(names) > 4 else "")
+        text = f"{len(names)} found: {shown}"
+    elif isinstance(data, list) and not data:
+        text = "nothing found"
+    elif isinstance(data, dict):
+        scalars = [(k, v) for k, v in data.items() if isinstance(v, (str, int, float)) and k != "id"]
+        text = ", ".join(f"{k.replace('_', ' ')} {v:g}" if isinstance(v, float) else f"{k.replace('_', ' ')} {v}"
+                         for k, v in scalars[:4]) or result
+    else:
+        text = result
+    return text if len(text) <= limit else text[: limit - 3] + "..."
 
 
 def _needs_no_arguments(tool: Any) -> bool:
@@ -105,8 +132,7 @@ class ScriptedProvider(LLMProvider):
         self._pause(should_cancel)
         emit("tool_result", {"tool": tool.name, "result": result[:2000]})
 
-        preview = result if len(result) <= 160 else result[:157] + "..."
-        return ProviderResult(text=f"Scripted run called {tool.name}. Result: {preview}", tokens_used=0)
+        return ProviderResult(text=f"Checked {tool.name.replace('_', ' ')}: {describe(result)}.", tokens_used=0)
 
     def _delegate(self, tools, user_message, emit, should_cancel) -> ProviderResult:
         tools_by_name = {t.name: t for t in tools}
@@ -118,7 +144,6 @@ class ScriptedProvider(LLMProvider):
         findings = []
         for name, result in run_tool_calls(requested, tools_by_name, emit, max_parallel=len(requested)):
             emit("tool_result", {"tool": name, "result": result[:2000]})
-            preview = result if len(result) <= 240 else result[:237] + "..."
-            findings.append(f"- {name.removeprefix(DELEGATE_PREFIX)}: {preview}")
+            findings.append(f"- {name.removeprefix(DELEGATE_PREFIX).replace('_', ' ')}: {describe(result, 240)}")
 
         return ProviderResult(text="Findings from the team:\n" + "\n".join(findings), tokens_used=0)

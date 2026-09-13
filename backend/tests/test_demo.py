@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from app.agents import crud as agent_crud
 from app.agents.appliers import apply_action, missing_inputs
 from app.agents.models import AgentAction, AgentDefinition, AgentRun
-from app.agents.providers.scripted_provider import ScriptedProvider, route
+from app.agents.providers.scripted_provider import ScriptedProvider, describe, route
 from app.agents.runner import execute_run
 from app.audit.models import ChangeLog
 from app.demo import reset_demo_data
@@ -20,7 +20,8 @@ def test_the_demo_gives_every_page_something_real_to_show(db):
 
     assert counts["orders"] > 500
     assert db.query(AgentDefinition).count() == 6
-    assert db.query(AgentDefinition).filter_by(key="boss").one().name == "Maestro"
+    maestro = db.query(AgentDefinition).filter_by(key="boss").one()
+    assert (maestro.name, maestro.schedule_cron) == ("Maestro", "0 9 * * *")
 
     # Six weeks of trading is enough for the weekday forecast.
     assert restaurant_crud.forecast(db)["method"] == "weekday"
@@ -95,6 +96,7 @@ def test_scripted_maestro_delegates_in_parallel_against_the_demo(threaded_db, mo
     children = threaded_db.query(AgentRun).filter(AgentRun.parent_run_id == run.id).all()
     assert sorted(c.status for c in children) == ["succeeded", "succeeded"]
     assert "inventory:" in summary and "profit:" in summary
+    assert "{" not in summary  # read as sentences, not raw JSON
     kinds = [e.type for e in agent_crud.list_events(threaded_db, run.id)]
     assert kinds.count("delegation") == 2
 
@@ -123,3 +125,10 @@ def test_one_process_can_serve_the_frontend_and_the_api(tmp_path: Path, monkeypa
             assert client.get("/api/v1/agents/runtime").status_code == 200
     finally:
         app.router.routes[:] = routes_before
+
+
+def test_scripted_summaries_read_tool_results_as_sentences():
+    assert describe('[{"id": "1", "name": "Tomatoes"}, {"id": "2", "name": "Basil"}]') == "2 found: Tomatoes, Basil"
+    assert describe("[]") == "nothing found"
+    assert describe('{"days": 7, "revenue": 4950.5, "orders": 150}') == "days 7, revenue 4950.5, orders 150"
+    assert describe("plain text") == "plain text"
