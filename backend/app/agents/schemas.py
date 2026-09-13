@@ -14,6 +14,15 @@ class AgentDefinitionOut(BaseModel):
     tool_allowlist: list
     schedule_cron: str | None
     enabled: bool
+    #: When the schedule next fires, in UTC. None when unscheduled or disabled.
+    next_run_at: datetime | None = None
+
+
+class AgentDefinitionUpdate(BaseModel):
+    """Set `schedule_cron` to null to remove a schedule."""
+
+    schedule_cron: str | None = None
+    enabled: bool | None = None
 
 
 class AgentEventOut(BaseModel):

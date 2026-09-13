@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
-from app.agents import crud, executor, schemas
+from app.agents import crud, executor, scheduler, schemas
 from app.agents.appliers import ApplyError, apply_action, is_appliable, missing_inputs
 from app.agents.broker import TERMINAL, broker
 from app.audit.context import Actor, actor_context, get_actor
@@ -18,9 +18,63 @@ HEARTBEAT_SECONDS = 15
 router = APIRouter(prefix="/api/v1/agents", tags=["agents"])
 
 
+def _definition_out(defn) -> schemas.AgentDefinitionOut:
+    out = schemas.AgentDefinitionOut.model_validate(defn)
+    if defn.enabled and defn.schedule_cron:
+        try:
+            out.next_run_at = scheduler.next_fire_time(defn.schedule_cron)
+        except scheduler.InvalidSchedule:
+            out.next_run_at = None
+    return out
+
+
+@router.get("/runtime")
+def runtime():
+    """What the agents are running on right now, for the UI's status line."""
+    from app.agents.providers import get_provider
+    from app.config import settings
+
+    provider = get_provider()
+    return {
+        "provider": provider.key,
+        "model": provider.resolve_model("claude-opus-5"),
+        "scheduler_running": scheduler.is_running(),
+        "max_concurrent_runs": executor.MAX_CONCURRENT_RUNS,
+        "configured_provider": settings.llm_provider,
+    }
+
+
 @router.get("/definitions", response_model=list[schemas.AgentDefinitionOut])
 def list_definitions(db: Session = Depends(get_db)):
-    return crud.list_definitions(db)
+    return [_definition_out(d) for d in crud.list_definitions(db)]
+
+
+@router.patch("/definitions/{agent_key}", response_model=schemas.AgentDefinitionOut)
+def update_definition(
+    agent_key: str, payload: schemas.AgentDefinitionUpdate, db: Session = Depends(get_db)
+):
+    """Schedule, reschedule, pause or resume an agent."""
+    defn = crud.get_definition_by_key(db, agent_key)
+    if defn is None:
+        raise HTTPException(404, f"No agent with key '{agent_key}'")
+
+    fields = payload.model_dump(exclude_unset=True)
+    if "schedule_cron" in fields:
+        expression = (fields["schedule_cron"] or "").strip() or None
+        if expression:
+            try:
+                scheduler.parse_cron(expression)
+            except scheduler.InvalidSchedule as exc:
+                raise HTTPException(422, str(exc)) from exc
+        defn.schedule_cron = expression
+    if fields.get("enabled") is not None:
+        defn.enabled = fields["enabled"]
+
+    db.add(defn)
+    db.commit()
+    db.refresh(defn)
+    scheduler.sync_agent_schedules()
+    return _definition_out(defn)
 
 
 @router.post("/runs", response_model=schemas.AgentRunOut, status_code=202)

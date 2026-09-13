@@ -10,7 +10,7 @@ domain mutation, the action's status change, and the audit rows the
 flush listener writes all land together or not at all.
 """
 
-from datetime import date, time
+from datetime import date, datetime, time, timezone
 
 from sqlalchemy.orm import Session
 
@@ -102,6 +102,21 @@ def apply_shift_change(db: Session, payload: dict) -> str:
     return f"Shift scheduled: {staff.name} on {shift_date} {start_time}-{end_time} as {shift.role}"
 
 
+def _promo_end(raw) -> datetime | None:
+    """Parse an optional promotion end time. Naive values are taken as UTC."""
+    if raw in (None, ""):
+        return None
+    try:
+        ends_at = datetime.fromisoformat(str(raw))
+    except ValueError as exc:
+        raise ApplyError(f"promo_ends_at {raw!r} is not an ISO date or datetime") from exc
+    if ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=timezone.utc)
+    if ends_at <= datetime.now(timezone.utc):
+        raise ApplyError("A promotion cannot end in the past")
+    return ends_at
+
+
 def apply_menu_change(db: Session, payload: dict) -> str:
     item_id = _require(payload, "menu_item_id")
     item = db.get(MenuItem, item_id)
@@ -128,10 +143,25 @@ def apply_menu_change(db: Session, payload: dict) -> str:
         if new_price < 0:
             raise ApplyError(f"new_price must not be negative, got {new_price}")
         previous = item.price
+
+        if change_type == "promotion":
+            ends_at = _promo_end(payload.get("promo_ends_at"))
+            # Stacking promotions must not lose the real price: keep the first one.
+            if item.regular_price is None:
+                item.regular_price = previous
+            item.promo_ends_at = ends_at
+            item.price = new_price
+            db.add(item)
+            until = f" until {ends_at:%Y-%m-%d %H:%M} UTC" if ends_at else " (no end date)"
+            return f"Promotion applied: {item.name} {previous:.2f} -> {new_price:.2f}{until}"
+
+        # A deliberate price change supersedes any running promotion; letting
+        # the promo expire later would overwrite the new price with the old one.
+        item.regular_price = None
+        item.promo_ends_at = None
         item.price = new_price
         db.add(item)
-        label = "Promotion applied" if change_type == "promotion" else "Price changed"
-        return f"{label}: {item.name} {previous:.2f} -> {new_price:.2f}"
+        return f"Price changed: {item.name} {previous:.2f} -> {new_price:.2f}"
 
     if change_type == "remove":
         if not item.is_available:

@@ -133,6 +133,8 @@ def menu_performance(db: Session) -> list[dict]:
                 "cost_source": "recipe" if item.id in from_recipe else "manual",
                 "description": item.description,
                 "is_available": item.is_available,
+                "regular_price": item.regular_price,
+                "promo_ends_at": item.promo_ends_at,
                 "units_sold": int(units),
                 "revenue": round(float(revenue), 2),
                 "margin": round(unit_margin, 2),
@@ -166,7 +168,7 @@ def profit_summary(db: Session, days: int = 30) -> dict:
         select(Order, OrderItem, MenuItem)
         .join(OrderItem, OrderItem.order_id == Order.id)
         .join(MenuItem, MenuItem.id == OrderItem.menu_item_id)
-        .where(Order.status == "completed", func.date(Order.created_at) >= start.isoformat())
+        .where(Order.status == "completed", func.date(Order.created_at) >= start)
     )
 
     by_day: dict[str, dict] = {}
@@ -176,7 +178,7 @@ def profit_summary(db: Session, days: int = 30) -> dict:
     revenue = cogs = 0.0
 
     for order, item, menu_item in db.execute(sold):
-        day = order.created_at.date().isoformat()
+        day = utc_day(order.created_at)
         value = item.qty * item.unit_price
         cost = item.qty * from_recipe.get(menu_item.id, menu_item.cost)
         revenue += value
@@ -442,7 +444,98 @@ def daily_consumption(db: Session, days: int = 30) -> dict[str, float]:
         select(RecipeItem.inventory_item_id, func.sum(RecipeItem.quantity * OrderItem.qty))
         .join(OrderItem, OrderItem.menu_item_id == RecipeItem.menu_item_id)
         .join(Order, Order.id == OrderItem.order_id)
-        .where(Order.status == "completed", func.date(Order.created_at) >= start.isoformat())
+        .where(Order.status == "completed", func.date(Order.created_at) >= start)
         .group_by(RecipeItem.inventory_item_id)
     )
     return {item_id: float(total or 0.0) / days for item_id, total in rows}
+
+
+def utc_day(moment: datetime) -> str:
+    """The UTC calendar day of a stored timestamp, as YYYY-MM-DD.
+
+    SQLite hands timestamps back naive (they were written in UTC); Postgres
+    hands them back aware. Both must bucket into the same day.
+    """
+    if moment.tzinfo is not None:
+        moment = moment.astimezone(timezone.utc)
+    return moment.date().isoformat()
+
+
+def forecast(db: Session, days_ahead: int = 7, history_days: int = 28) -> dict:
+    """Project revenue and gross profit for the coming days from real sales.
+
+    Deliberately simple and explicit about its footing, replacing a panel
+    that showed invented numbers:
+
+    * weekday means once there are two full weeks of trading to learn the
+      weekly shape from;
+    * otherwise the plain daily mean over the days the restaurant has
+      actually been trading (not the empty days before its first order).
+
+    The range is one standard deviation either side, floored at zero.
+    Only complete days count -- a partly-traded today would drag every
+    projection down.
+    """
+    from statistics import mean, pstdev
+
+    today = datetime.now(timezone.utc).date()
+    history_end = today - timedelta(days=1)
+    summary = profit_summary(db, days=history_days + 1)
+    history = [d for d in summary["daily"] if d["date"] <= history_end.isoformat()]
+
+    first_trade = next((d["date"] for d in history if d["orders"] > 0), None)
+    if first_trade is None:
+        return {
+            "method": "none",
+            "basis_days": 0,
+            "confidence": "none",
+            "message": "No completed trading days yet, so there is nothing to project from.",
+            "history": history,
+            "days": [],
+            "total_revenue": 0.0,
+            "total_profit": 0.0,
+        }
+
+    trading = [d for d in history if d["date"] >= first_trade]
+    basis_days = len(trading)
+    weekday_mode = basis_days >= 14
+
+    def weekday(iso: str) -> int:
+        return date.fromisoformat(iso).weekday()
+
+    projected = []
+    for offset in range(1, days_ahead + 1):
+        target = today + timedelta(days=offset - 1)
+        pool = [d for d in trading if weekday(d["date"]) == target.weekday()] if weekday_mode else trading
+        revenues = [d["revenue"] for d in pool] or [0.0]
+        profits = [d["profit"] for d in pool] or [0.0]
+        spread = pstdev(revenues) if len(revenues) > 1 else 0.0
+        projected.append(
+            {
+                "date": target.isoformat(),
+                "revenue": round(mean(revenues), 2),
+                "profit": round(mean(profits), 2),
+                "low": round(max(0.0, mean(revenues) - spread), 2),
+                "high": round(mean(revenues) + spread, 2),
+            }
+        )
+
+    confidence = "high" if basis_days >= 28 else "medium" if basis_days >= 14 else "low"
+    method = "weekday" if weekday_mode else "average"
+    explanation = (
+        f"Average of each weekday over {basis_days} trading days."
+        if weekday_mode
+        else f"Daily average over {basis_days} trading day{'s' if basis_days != 1 else ''}; "
+        f"weekday patterns need at least 14."
+    )
+
+    return {
+        "method": method,
+        "basis_days": basis_days,
+        "confidence": confidence,
+        "message": explanation,
+        "history": trading,
+        "days": projected,
+        "total_revenue": round(sum(d["revenue"] for d in projected), 2),
+        "total_profit": round(sum(d["profit"] for d in projected), 2),
+    }

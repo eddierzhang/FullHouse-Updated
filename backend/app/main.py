@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from datetime import datetime, timezone
 
-from app.agents import executor
+from app.agents import executor, scheduler
 from app.agents.broker import broker
 from app.agents.routes import router as agents_router
 from app.bootstrap import setup
@@ -60,7 +60,10 @@ async def lifespan(app: FastAPI):
     recovered = _recover_orphaned_runs()
     if recovered:
         logger.warning("marked %d interrupted run(s) as failed at startup", recovered)
+    if settings.scheduler_enabled:
+        scheduler.start()
     yield
+    scheduler.shutdown()
     executor.shutdown()
 
 

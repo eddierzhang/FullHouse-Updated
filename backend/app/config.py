@@ -12,7 +12,8 @@ class Settings:
     ]
     anthropic_api_key: str | None = os.getenv("ANTHROPIC_API_KEY")
 
-    # Which backend runs the agents: "anthropic" (hosted) or "ollama" (local).
+    # Which backend runs the agents: "anthropic" (hosted), "ollama" (local),
+    # or "scripted" (deterministic, model-free -- for tests, CI and demos).
     llm_provider: str = os.getenv("LLM_PROVIDER", "anthropic").strip().lower()
 
     # Ollama. `ollama_model` replaces AgentDefinition.model for every run,
@@ -25,6 +26,10 @@ class Settings:
     # Cap on tool round-trips in one run, so a model that loops on the
     # same call fails loudly instead of running forever.
     agent_max_tool_rounds: int = int(os.getenv("AGENT_MAX_TOOL_ROUNDS", "12"))
+
+    # Cron-scheduled agents and the promotion-expiry sweep. Off in tests,
+    # where a background thread touching the database would be a flake source.
+    scheduler_enabled: bool = os.getenv("SCHEDULER_ENABLED", "true").strip().lower() in ("1", "true", "yes")
 
 
 settings = Settings()

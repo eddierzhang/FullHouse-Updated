@@ -1,23 +1,57 @@
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
+import os
+import tempfile
+
+# Must run before anything imports app.config. The app's own engine -- used
+# by startup recovery and background runs -- would otherwise point at the
+# developer's real app.db, and running the suite while the app is up would
+# mark its in-flight agent runs as failed.
+#
+# TEST_DATABASE_URL runs the whole suite against that database instead (CI
+# uses it for Postgres); otherwise a throwaway SQLite file isolates it.
+os.environ["SCHEDULER_ENABLED"] = "false"  # tests drive scheduled jobs directly
+
+TEST_DATABASE_URL = os.environ.get("TEST_DATABASE_URL")
+if TEST_DATABASE_URL:
+    os.environ["DATABASE_URL"] = TEST_DATABASE_URL
+else:
+    _scratch = os.path.join(tempfile.mkdtemp(prefix="fullhouse-tests-"), "app.db")
+    os.environ["DATABASE_URL"] = f"sqlite:///{_scratch}"
+
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
+from sqlalchemy import create_engine  # noqa: E402
+from sqlalchemy.orm import sessionmaker  # noqa: E402
+from sqlalchemy.pool import StaticPool  # noqa: E402
 
 # Imported for their side effect of registering tables on Base.metadata.
-from app.agents import models as agent_models  # noqa: F401
-from app.audit import listener as audit_listener
-from app.audit import models as audit_models  # noqa: F401
-from app.db.session import Base, get_db
-from app.restaurant import models as restaurant_models  # noqa: F401
+from app.agents import models as agent_models  # noqa: E402,F401
+from app.audit import listener as audit_listener  # noqa: E402
+from app.audit import models as audit_models  # noqa: E402,F401
+from app.db import session as app_session  # noqa: E402
+from app.db.session import Base, get_db  # noqa: E402
+from app.restaurant import models as restaurant_models  # noqa: E402,F401
 
 # The listener is global to the Session class, so install it once for the
 # whole test session exactly as the app does at import time.
 audit_listener.install()
 
+# The app-level engine needs tables even in SQLite mode, since startup
+# recovery queries it whenever a test starts the app.
+Base.metadata.create_all(app_session.engine)
+
+USING_POSTGRES = app_session.DATABASE_URL.startswith("postgresql")
+
 
 @pytest.fixture
 def engine():
+    if USING_POSTGRES:
+        # One shared server: rebuild the schema so every test starts empty.
+        eng = app_session.engine
+        Base.metadata.drop_all(eng)
+        Base.metadata.create_all(eng)
+        yield eng
+        return
+
     eng = create_engine(
         "sqlite://",
         connect_args={"check_same_thread": False},

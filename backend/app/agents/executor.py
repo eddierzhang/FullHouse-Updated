@@ -46,10 +46,18 @@ def clear_cancel(run_id: str) -> None:
         _cancelled.discard(run_id)
 
 
+def _live_pool() -> ThreadPoolExecutor:
+    """The worker pool, recreated if a previous app lifespan shut it down."""
+    global _pool
+    if getattr(_pool, "_shutdown", False):
+        _pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_RUNS, thread_name_prefix="agent-run")
+    return _pool
+
+
 def submit(run_id: str) -> None:
     """Queue a run for execution and return immediately."""
     clear_cancel(run_id)
-    _pool.submit(_execute, run_id)
+    _live_pool().submit(_execute, run_id)
 
 
 def _execute(run_id: str) -> None:

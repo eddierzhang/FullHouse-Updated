@@ -281,6 +281,11 @@ def update_menu_item(menu_item_id: str, payload: schemas.MenuItemUpdate, db: Ses
 
     for field, value in fields.items():
         setattr(item, field, value)
+    if "price" in fields:
+        # Editing the price by hand ends any promotion; otherwise its expiry
+        # would later overwrite this price with the pre-promotion one.
+        item.regular_price = None
+        item.promo_ends_at = None
     db.add(item)
     db.commit()
     db.refresh(item)
@@ -384,3 +389,13 @@ def update_inventory_item(
     db.commit()
     db.refresh(item)
     return item
+
+
+@router.get("/forecast", response_model=schemas.ForecastOut)
+def forecast(
+    days: int = Query(default=7, ge=1, le=28),
+    history: int = Query(default=28, ge=7, le=180),
+    db: Session = Depends(get_db),
+):
+    """Projected revenue and gross profit, built from completed trading days."""
+    return crud.forecast(db, days_ahead=days, history_days=history)

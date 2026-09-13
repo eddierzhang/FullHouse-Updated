@@ -59,6 +59,9 @@ class MenuItem(Base):
     cost: Mapped[float] = mapped_column(Float, default=0, nullable=False)
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    # Set while a promotion is running: the price to restore, and when.
+    regular_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    promo_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Order(Base):

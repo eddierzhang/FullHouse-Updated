@@ -1,5 +1,6 @@
 import sqlite3
 from collections.abc import Generator
+from typing import Any
 
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
@@ -7,8 +8,33 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
 
-connect_args = {"check_same_thread": False} if settings.database_url.startswith("sqlite") else {}
-engine = create_engine(settings.database_url, connect_args=connect_args)
+
+def normalize_database_url(url: str) -> str:
+    """Point bare Postgres URLs at the psycopg 3 driver.
+
+    Hosts such as Render and Neon hand out `postgres://` or `postgresql://`
+    URLs, which SQLAlchemy would otherwise route to psycopg2 -- not installed.
+    """
+    for prefix in ("postgres://", "postgresql://"):
+        if url.startswith(prefix):
+            return "postgresql+psycopg://" + url[len(prefix):]
+    return url
+
+
+def engine_options(url: str) -> dict[str, Any]:
+    if url.startswith("sqlite"):
+        return {"connect_args": {"check_same_thread": False}}
+    if url.startswith("postgresql"):
+        # Sessions at zero offset: timestamps are bucketed into days in Python,
+        # and a server in another zone would shift orders across midnight.
+        # "GMT" rather than "UTC": it is built into every Postgres, whereas
+        # "UTC" needs the timezone database, which some builds ship without.
+        return {"connect_args": {"options": "-c timezone=GMT"}, "pool_pre_ping": True}
+    return {}
+
+
+DATABASE_URL = normalize_database_url(settings.database_url)
+engine = create_engine(DATABASE_URL, **engine_options(DATABASE_URL))
 SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 
 
@@ -31,7 +57,7 @@ def _enforce_sqlite_foreign_keys(dbapi_connection, connection_record):
     Left off, deleting a referenced row silently orphans whatever points
     at it -- a menu item removed out from under the order lines that
     record its sales. Reverting an insert deletes rows, so this needs to
-    fail loudly rather than quietly.
+    fail loudly rather than quietly. Postgres always enforces them.
     """
     if isinstance(dbapi_connection, sqlite3.Connection):
         cursor = dbapi_connection.cursor()

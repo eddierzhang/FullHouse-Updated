@@ -49,6 +49,8 @@ class MenuItemOut(BaseModel):
     cost: float
     is_available: bool
     description: str | None
+    regular_price: float | None = None
+    promo_ends_at: datetime | None = None
 
 
 class MenuItemCreate(BaseModel):
@@ -167,6 +169,8 @@ class MenuPerformanceOut(BaseModel):
     margin: float
     margin_pct: float
     profit: float
+    regular_price: float | None = None
+    promo_ends_at: datetime | None = None
 
 
 class DailyProfitOut(BaseModel):
@@ -299,3 +303,22 @@ class SupplyChainOut(BaseModel):
     suppliers: list[SupplierExposureOut]
     low_stock: list[LowStockOut]
     cover: list[CoverOut]
+
+
+class ForecastDayOut(BaseModel):
+    date: str
+    revenue: float
+    profit: float
+    low: float
+    high: float
+
+
+class ForecastOut(BaseModel):
+    method: str  # weekday | average | none
+    basis_days: int
+    confidence: str  # high | medium | low | none
+    message: str
+    history: list[DailyProfitOut]
+    days: list[ForecastDayOut]
+    total_revenue: float
+    total_profit: float

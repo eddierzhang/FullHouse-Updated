@@ -329,3 +329,23 @@ cancelled mid-flight.
 **Known gaps**: the broker is in-process, so a second worker would not see the events —
 Redis pub/sub is the next step if this is ever scaled out. Recipes are per-serving only, with
 no yields, prep batches or waste factor.
+
+## Phase 10 — Docker (done, not yet run under Docker)
+
+`docker-compose.yml` runs the stack as four services: nginx serving the built frontend and
+proxying `/api` to the backend, the FastAPI backend (migrates and seeds on start, SQLite on a
+volume), Ollama, and a one-shot job that pulls the model. `DEPLOY.md` covers local use and a
+free deployment on an Oracle Cloud Always Free VM.
+
+Decisions worth knowing:
+- The frontend image builds with `VITE_API_BASE=same-origin` and calls relative URLs, so one
+  image works on any host with no CORS setup. An empty value was tried first and silently
+  fell back to `localhost:8000` — `client.ts` now treats the explicit sentinel specially.
+- The backend runs one uvicorn process; the in-process broker requires it.
+- No entrypoint shell script: `core.autocrlf` would give it CRLF endings and break it in Linux.
+- nginx disables buffering and raises the read timeout on `/api` so run streams work.
+
+Verified without Docker (not installed on the dev machine): the container-mode frontend build
+contains no `localhost:8000`, the backend startup chain migrates and seeds a fresh database and
+passes its healthcheck, a restart does not duplicate data, and the compose file parses with the
+intended dependency ordering. The images themselves have not been built.
