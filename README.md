@@ -12,6 +12,9 @@ in parallel. Each reads the restaurant's real data and proposes changes: reorder
 Nothing takes effect until a person approves it, every change is recorded with who made it and why, and anything can
 be undone.
 
+> FullHouse started as a hackathon project — the original version is at
+> [eddierzhang/FullHouse](https://github.com/eddierzhang/FullHouse).
+
 ![Asking Maestro a question, watching it delegate live, and approving what it found](docs/demo.gif)
 
 ## Try it
