@@ -6,7 +6,14 @@ The single-container image in the repo root is built for this: the frontend and 
 scripted provider (no model, no API key), and a demo restaurant reloaded at every start and daily at 04:00 UTC. It
 used about 100 MB of memory when measured locally, so a 512 MB free tier is plenty.
 
-### Render
+### Render — one click
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/eddierzhang/FullHouse-Updated)
+
+The button opens Render with this repository's [`render.yaml`](render.yaml) already read: sign in with GitHub, confirm,
+and the free `fullhouse-demo` service is created. Nothing to configure and no card required.
+
+By hand instead:
 
 1. Sign in at [render.com](https://render.com) with GitHub and give it access to this repository.
 2. **New → Blueprint**, pick the repository. Render reads [`render.yaml`](render.yaml) and proposes one free web
@@ -24,8 +31,13 @@ docker build -t fullhouse .
 docker run -p 8080:8000 fullhouse                  # the host may assign the port via $PORT instead
 ```
 
-Fly.io, Koyeb and Google Cloud Run all run this image unchanged. Set `DEMO_MODE=false` and a different
-`LLM_PROVIDER` to run it as a real instance instead of a demo.
+Any host that runs one container runs this image unchanged — Fly.io, Google Cloud Run, Northflank, an EC2 box.
+Set `DEMO_MODE=false` and a different `LLM_PROVIDER` to run it as a real instance instead of a demo.
+
+Be aware which of those are still *free*, as of September 2026: Fly.io and Koyeb have both retired their free
+tiers, and Cloud Run's always-free grant (180,000 vCPU-seconds a month, about 50 CPU-hours) does not cover an
+always-on process — and scaling it to zero throttles the CPU between requests, which stops the cron scheduler and
+freezes any agent run still in flight. Render and Northflank are the free container hosts left.
 
 **On an open demo, anyone can change anything** — that's the point, and the scheduled reset is what makes it safe.
 Don't point a demo at data you care about.
@@ -66,8 +78,8 @@ an in-process broker, so scaling it to two replicas would split runs from their 
 ## Free cloud deployment
 
 The constraint that decides everything is the model. A 7B model needs several GB of RAM, and
-no free *platform* tier comes close — Render's free web service is 512 MB. So there are two
-routes, and only the first runs the agents for free.
+no free *platform* tier comes close — Render's free web service is 512 MB. So there are three
+routes, and only the first runs the agents on a model for free.
 
 ### Route 1 (recommended): Oracle Cloud Always Free VM
 
@@ -98,11 +110,9 @@ One free ARM VM runs the entire compose stack, model included.
    curl -fsSL https://get.docker.com | sh
    sudo usermod -aG docker $USER && newgrp docker
    ```
-4. **Get the code.** The repo is private, so create a
-   [fine-grained personal access token](https://github.com/settings/personal-access-tokens)
-   with read access to it, then:
+4. **Get the code.**
    ```bash
-   git clone https://<token>@github.com/eddierzhang/FullHouse-Updated.git
+   git clone https://github.com/eddierzhang/FullHouse-Updated.git
    cd FullHouse-Updated
    ```
 5. **Configure and start.**
@@ -126,16 +136,38 @@ prices and revert history. Pick one before sharing it:
 - **nginx basic auth** — one password for everyone, a few lines in `frontend/nginx.conf`.
 - **Restrict port 80 to your own IP** in the Oracle security list, if only you need it.
 
-### Route 2: free platforms, without agents
+### Route 2: free platforms, on the scripted provider
 
-Useful for showing the UI, but agent runs won't work for free:
+Useful for showing the app, but agent runs won't reach a model for free:
 
-- **Frontend:** Cloudflare Pages, Netlify or Vercel. Build with `VITE_API_BASE` set to the
-  backend's URL, and set `FRONTEND_ORIGIN` on the backend to the frontend's URL for CORS.
-- **Backend:** Render's free web service — 512 MB, and it spins down after 15 minutes idle.
-  Spinning down kills any run in flight; the backend marks those runs failed on its next start.
+- **The whole thing, one container:** Render's free web service — 512 MB, spins down after 15
+  idle minutes. Spinning down kills any run in flight; the backend marks those runs failed on
+  its next start. Northflank's free tier (two services) is the nearest alternative left.
+- **Frontend alone:** Cloudflare Pages, Netlify or Vercel, all permanently free. Build with
+  `VITE_API_BASE` set to the backend's URL, and set `FRONTEND_ORIGIN` on the backend to the
+  frontend's URL for CORS.
 - **No model:** there is no free host for Ollama at this size. Agents would need
   `LLM_PROVIDER=anthropic` and a paid API key.
 - **Database:** Render's free disk is wiped on every deploy, so SQLite won't persist, and
   Render's free Postgres is deleted after 30 days. Neon's free tier (0.5 GB) is permanent, and
   Postgres is supported: point `DATABASE_URL` at it (CI runs the whole suite on Postgres 16).
+
+### Route 3: a free VM on one of the big clouds
+
+Both of these run the compose stack the way the Oracle route does, and neither has the RAM for
+a local model — use `LLM_PROVIDER=scripted`, or `anthropic` with a key.
+
+**Google Compute Engine** keeps a genuinely permanent free e2-micro in `us-west1`, `us-central1`
+or `us-east1`, with 30 GB of disk. Its 1 GB of RAM holds the single-container image comfortably
+(about 100 MB measured) but not Ollama. The limit that bites first is egress: 1 GB a month out
+of North America.
+
+**AWS is no longer free in any lasting sense.** Accounts created after 15 July 2025 get $100 in
+credits — up to $200 after the onboarding tasks — and six months, after which everything bills;
+the old 12-month tier survives only on accounts older than that. To spend the credits here, a
+`t4g.small` runs the compose stack for about $13 a month including its disk, so the balance
+covers the whole window, and staying on the *Free* plan means AWS stops the resources instead
+of charging you when the credits run out. Keep it to one instance whatever you use: App Runner
+and ECS both default to settings that will run two copies of the backend, which splits agent
+runs from their live streams and gives you two schedulers. A GPU instance for Ollama
+(`g5.xlarge`, about $1/hour) would exhaust the credits in under a week.

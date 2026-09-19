@@ -27,7 +27,14 @@ docker compose -f docker-compose.demo.yml up --build     # then open http://loca
 ```
 
 Without Docker: `python dev.py setup` once, then `python dev.py demo`.
-To host it publicly for free, see [Deploying the public demo](DEPLOY.md#public-demo-free).
+
+Or put your own copy online, free and without a card, on Render's free plan:
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/eddierzhang/FullHouse-Updated)
+
+It reads [`render.yaml`](render.yaml), builds the single-container image and serves the same demo. The free plan
+sleeps after 15 idle minutes and wakes in about a minute, starting from a fresh restaurant each time. Other hosts,
+and running it for real rather than as a demo, are in [DEPLOY.md](DEPLOY.md).
 
 | Overview | Maestro's run, live | Menu costed from recipes |
 |---|---|---|
